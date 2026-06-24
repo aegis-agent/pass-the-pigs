@@ -5,6 +5,7 @@ import {
   HelpCircle, Home, RotateCcw, Check, Users, ArrowLeft, Trash2, PartyPopper, Copy,
   Target, Repeat, Sliders, Skull,
 } from "lucide-react";
+import InstallPrompt from "./InstallPrompt.jsx";
 import { reduceGame, newGame, uid, roundOf, modeLabel } from "./engine.js";
 import { SINGLES, DOUBLES, PRESETS } from "./presets.js";
 import { store, K, encodeRoster, decodeRoster } from "./storage.js";
@@ -28,6 +29,7 @@ export default function App() {
   const [history, setHistory] = useState([]);
   const [session, setSession] = useState(null);
   const [modal, setModal] = useState(null);
+  const [gameJustFinished, setGameJustFinished] = useState(false);
   const savedRef = useRef(false);
 
   useEffect(() => {
@@ -53,9 +55,16 @@ export default function App() {
     saveActive(updated);
     if (next.status === "over") {
       const gw = { ...session.gameWins };
-      if (!next.tie && next.winnerId) gw[next.winnerId] = (gw[next.winnerId] || 0) + 1;
-      const games = [...session.games, { n: next.n, scores: next.scores, winnerId: next.tie ? null : next.winnerId, eliminated: next.eliminated }];
+      if (!next.tie) {
+        if (next.winnerId) {
+          gw[next.winnerId] = (gw[next.winnerId] || 0) + 1;
+        } else if (next.loserId) {
+          session.playerIds.forEach((pid) => { if (pid !== next.loserId) gw[pid] = (gw[pid] || 0) + 1; });
+        }
+      }
+      const games = [...session.games, { n: next.n, scores: next.scores, winnerId: next.tie ? null : next.winnerId, loserId: next.loserId, eliminated: next.eliminated }];
       saveActive({ ...updated, gameWins: gw, gamesPlayed: session.gamesPlayed + 1, games });
+      if (session.gamesPlayed === 0) setTimeout(() => setGameJustFinished(true), 500);
       setTimeout(() => setView("over"), 650);
     }
   };
@@ -101,6 +110,7 @@ export default function App() {
 
       {modal === "roster" && <RosterModal roster={roster} saveRoster={saveRoster} onClose={() => setModal(null)} />}
       {modal === "rules" && <RulesModal onClose={() => setModal(null)} />}
+      <InstallPrompt gameJustFinished={gameJustFinished} />
     </Shell>
   );
 
@@ -143,6 +153,44 @@ function Shell({ children }) {
 
 function HomeScreen({ roster, session, history, onNew, onResume, onRoster, onRules, onHistory }) {
   const live = session?.currentGame?.status === "playing";
+  const [showImportBanner, setShowImportBanner] = useState(false);
+  const [imported, setImported] = useState(false);
+
+  useEffect(() => {
+    const isStandalone = window.matchMedia('(display-mode: standalone)').matches;
+    const hasState = roster.length > 0 || session;
+    if (isStandalone && !hasState && !imported) {
+      setShowImportBanner(true);
+    }
+  }, [roster, session, imported]);
+
+  const handleImportState = () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json';
+    input.onchange = async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      try {
+        const text = await file.text();
+        const state = JSON.parse(text);
+        let count = 0;
+        for (const [key, value] of Object.entries(state)) {
+          if (key.startsWith('ptp:')) {
+            localStorage.setItem(key, value);
+            count++;
+          }
+        }
+        setShowImportBanner(false);
+        setImported(true);
+        // Reload to pick up imported state
+        window.location.reload();
+      } catch (err) {
+        alert('Could not import: ' + err.message);
+      }
+    };
+    input.click();
+  };
   return (
     <div className="pop">
       <header style={{ textAlign: "center", marginTop: 28, marginBottom: 28 }}>
@@ -150,6 +198,37 @@ function HomeScreen({ roster, session, history, onNew, onResume, onRoster, onRul
         <h1 style={{ fontFamily: "Fredoka", fontWeight: 700, fontSize: 42, color: C.pink, marginTop: 8, letterSpacing: -0.5 }}>Pass The Pigs</h1>
         <p style={{ color: C.inkSoft, fontWeight: 600 }}>Tap the pigs. Bank your points. Win the bacon.</p>
       </header>
+      {showImportBanner && (
+        <div style={{
+          marginBottom: 16, padding: "12px 16px", borderRadius: 16,
+          background: "#E8F5E9", border: "1px solid #A5D6A7",
+          textAlign: "center",
+        }}>
+          <div style={{ fontWeight: 700, fontSize: 14, color: "#2E7D32", marginBottom: 4 }}>
+            {"📱 Installed app detected"}
+          </div>
+          <p style={{ margin: "0 0 10px", fontSize: 13, color: "#33691E", lineHeight: 1.4 }}>
+            Import your saved game state to continue where you left off.
+          </p>
+          <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
+            <button onClick={handleImportState} style={{
+              padding: "10px 20px", borderRadius: 12, border: "none",
+              background: "#4CAF50", color: "#fff", fontWeight: 700, fontSize: 14,
+              cursor: "pointer", fontFamily: "inherit",
+            }}>
+              {"📂 Import Save File"}
+            </button>
+            <button onClick={() => setShowImportBanner(false)} style={{
+              padding: "10px 16px", borderRadius: 12, border: "none",
+              background: "transparent", color: "#7A6B7E", fontWeight: 600,
+              fontSize: 13, cursor: "pointer", fontFamily: "inherit",
+            }}>
+              Skip
+            </button>
+          </div>
+        </div>
+      )}
+
       {live && <BigButton onClick={onResume} bg={C.gold} fg={C.ink}><RotateCcw size={22} /> Resume game {session.currentGame.n}</BigButton>}
       <BigButton onClick={onNew} bg={C.pink} fg="#fff"><Plus size={24} /> New game</BigButton>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 12 }}>
@@ -249,9 +328,20 @@ function SetupScreen({ roster, saveRoster, onBack, onStart, onManage }) {
               <CheckPill on={!!wc.finishRound} onClick={() => { setWc({ finishRound: !wc.finishRound }); touch(); }} label="Finish the round" />
             </div>
           )}
+          {(wc.type === "targetScore" || wc.type === "targetOrRounds") && (<>
+            <CtlRow label="Win mode">
+              <Segmented value={wc.winMode || "firstTo"} onChange={(v) => { setWc({ winMode: v, winCount: v === "firstN" ? (wc.winCount || picked.length - 1) : undefined }); touch(); }}
+                options={[{ v: "firstTo", l: "First to wins" }, { v: "lastLoses", l: "Last to loses" }, { v: "firstN", l: "First N safe" }]} />
+            </CtlRow>
+            {(wc.winMode === "firstN") && (
+              <CtlRow label="Safe slots">
+                <Stepper value={wc.winCount || picked.length - 1} onChange={(v) => { setWc({ winCount: v }); touch(); }} step={1} min={1} max={Math.max(1, picked.length - 1)} />
+              </CtlRow>
+            )}
+          </>)}
           <CtlRow label="Pig Out">
-            <Segmented value={ruleset.pigOutPenalty ? "pen" : "turn"} onChange={(v) => { setRuleset((r) => ({ ...r, pigOutPenalty: v === "pen" ? 5 : 0 })); touch(); }}
-              options={[{ v: "turn", l: "Lose turn" }, { v: "pen", l: "Lose turn −5" }]} />
+            <Segmented value={ruleset.pigOutPenalty === null ? "off" : ruleset.pigOutPenalty ? "pen" : "turn"} onChange={(v) => { setRuleset((r) => ({ ...r, pigOutPenalty: v === "off" ? null : v === "pen" ? 5 : 0 })); touch(); }}
+              options={[{ v: "off", l: "Ignore" }, { v: "turn", l: "Lose turn" }, { v: "pen", l: "Lose turn −5" }]} />
           </CtlRow>
           <CtlRow label="Oinker (pigs touching)">
             <Segmented value={ruleset.oinker} onChange={(v) => { setRuleset((r) => ({ ...r, oinker: v })); touch(); }}
@@ -269,7 +359,7 @@ function SetupScreen({ roster, saveRoster, onBack, onStart, onManage }) {
             <Segmented value={ruleset.kissingBacon ? "on" : "off"} onChange={(v) => { setRuleset((r) => ({ ...r, kissingBacon: v === "on" })); touch(); }}
               options={[{ v: "off", l: "Off" }, { v: "on", l: "Bonus +100" }]} />
           </CtlRow>
-          <CtlRow label="Hog Call (predict throws)">
+          <CtlRow label="Hog Call (predict throws)" hint="Any player can call the next throw before it happens. If they predict correctly, they steal double the points from the roller. If wrong, the roller steals double from them.">
             <Segmented value={ruleset.hogCall ? "on" : "off"} onChange={(v) => { setRuleset((r) => ({ ...r, hogCall: v === "on" })); touch(); }}
               options={[{ v: "off", l: "Off" }, { v: "on", l: "Advanced rule" }]} />
           </CtlRow>
@@ -318,12 +408,16 @@ function GameScreen({ game, byId, dispatch, onMenu, onQuit }) {
   const reaches = (wc.type === "targetScore" || wc.type === "targetOrRounds") &&
     (wc.mustHitExact ? projected === wc.target : projected >= wc.target);
 
+  const wm = wc.winMode || "firstTo";
+  const reachedCount = (game.reachedTarget || []).length;
   const header = wc.type === "rounds" ? `round ${Math.min(roundOf(game), wc.rounds)}/${wc.rounds} · most points`
     : wc.type === "targetOrRounds" ? `to ${wc.target} · rd ${Math.min(roundOf(game), wc.rounds)}/${wc.rounds}`
+    : wm === "lastLoses" ? `race to ${wc.target} · last loses${wc.mustHitExact ? " (exact)" : ""}${reachedCount > 0 ? ` · ${reachedCount} safe` : ""}`
+    : wm === "firstN" ? `first ${wc.winCount || game.order.length - 1} to ${wc.target}${wc.mustHitExact ? " (exact)" : ""}${reachedCount > 0 ? ` · ${reachedCount}/${wc.winCount || game.order.length - 1}` : ""}`
     : `first to ${wc.target}${wc.mustHitExact ? " exactly" : ""}`;
 
   const dangers = [
-    { type: "PIG_OUT", bg: C.clay, title: "Pig Out", sub: R.pigOutPenalty ? "lose turn −5" : "lose this turn" },
+    { type: "PIG_OUT", bg: C.clay, title: "Pig Out", sub: R.pigOutPenalty === null ? "ignored" : R.pigOutPenalty ? "lose turn −5" : "lose this turn" },
     { type: "OINKER", bg: C.brick, title: "Oinker", sub: R.oinker === "wipeTurn" ? "lose this turn" : "lose ALL points" },
     ...(R.offTable !== "off" ? [{ type: "OFF_TABLE", bg: C.mud, title: "Off table", sub: R.offTable === "wipeTurn" ? "lose this turn" : "lose ALL points" }] : []),
     ...(R.piggyback !== "off" ? [{ type: "PIGGYBACK", bg: C.plum, title: "Piggyback", sub: R.piggyback === "eliminate" ? "out of game!" : "lose ALL points" }] : []),
@@ -466,16 +560,23 @@ function OverScreen({ session, byId, onNext, onFinish }) {
   const g = session.games[session.games.length - 1];
   const rows = Object.keys(g.scores).map((id) => ({ id, ...byId(id), score: g.scores[id], out: (g.eliminated || []).includes(id) }))
     .sort((a, b) => b.score - a.score);
-  const tie = !g.winnerId;
+  const tie = !g.winnerId && !g.loserId;
+  const loser = g.loserId ? byId(g.loserId) : null;
   const top = rows.filter((r) => !r.out && r.score === rows.filter((x) => !x.out)[0]?.score);
-  const winner = tie ? null : byId(g.winnerId);
+  const winner = (!tie && g.winnerId) ? byId(g.winnerId) : null;
   const lb = leaderboard(session.gameWins, session.playerIds, byId);
 
   return (
     <div className="pop">
       <Confetti />
       <div className="bouncein" style={{ textAlign: "center", marginTop: 18, marginBottom: 8, position: "relative", zIndex: 2 }}>
-        {tie ? (
+        {g.loserId ? (
+          <>
+            <div style={{ fontSize: 60, lineHeight: 1 }}>💀</div>
+            <h2 style={{ fontFamily: "Fredoka", fontWeight: 700, fontSize: 32, color: loser.color }}>{loser.name} loses!</h2>
+            <p style={{ color: C.inkSoft, fontWeight: 700 }}>Game {g.n} · everyone else survives</p>
+          </>
+        ) : tie ? (
           <>
             <div style={{ fontSize: 60, lineHeight: 1 }}>🤝</div>
             <h2 style={{ fontFamily: "Fredoka", fontWeight: 700, fontSize: 32 }}>It's a tie!</h2>
@@ -761,7 +862,7 @@ function CheckPill({ on, onClick, label }) {
     </button>
   );
 }
-function CtlRow({ label, children }) { return <div style={{ marginBottom: 14 }}><div style={{ fontWeight: 800, fontSize: 13, marginBottom: 7 }}>{label}</div>{children}</div>; }
+function CtlRow({ label, hint, children }) { return <div style={{ marginBottom: 14 }}><div style={{ fontWeight: 800, fontSize: 13, marginBottom: 7 }}>{label}{hint && <span title={hint} style={{ cursor: "help", fontSize: 14 }}>ℹ️</span>}</div>{children}</div>; }
 function Card({ children, style }) { return <div style={{ background: "#fff", border: `2px solid ${C.line}`, borderRadius: 20, padding: 14, ...style }}>{children}</div>; }
 function SectionLabel({ children, style }) { return <div style={{ fontWeight: 800, fontSize: 13, textTransform: "uppercase", letterSpacing: 0.8, color: C.inkSoft, marginBottom: 10, ...style }}>{children}</div>; }
 function TopBar({ title, onBack, right }) {

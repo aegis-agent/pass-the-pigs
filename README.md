@@ -67,7 +67,7 @@ See **RESEARCH.md** for the rules these encode, and **CONTINUATION.md** for the 
 | Roster, share codes, history, session leaderboard | ✅ |
 | Resume in-progress game after reload | ✅ |
 | Engine unit tests | ✅ (21) |
-| Hog Call | ⏳ spec'd |
+| Hog Call | ✅ |
 | Live multi-device sync (room codes) | ⏳ spec'd |
 | PWA / installable / offline | ⏳ spec'd |
 | Odds/EV helper, Party Edition mode | ⏳ spec'd |

@@ -8,23 +8,51 @@ function finalizeByScore(g) {
   const top = act.filter((id) => g.scores[id] === max);
   return { ...g, status: "over", pot: 0, rolls: [], winnerId: top[0] ?? null, tie: top.length > 1 };
 }
+
 function checkEnd(g) {
   const wc = g.ruleset.winCondition;
   const act = activeIds(g);
   if (g.order.length >= 2 && act.length === 1) return { ...g, status: "over", winnerId: act[0], tie: false };
   if (act.length === 0) return { ...g, status: "over", winnerId: null, tie: true };
+
+  // Win-mode variants for target-score games
+  const wm = wc.winMode || "firstTo";
+  const reached = g.reachedTarget || [];
+  if (wm !== "firstTo" && (wc.type === "targetScore" || wc.type === "targetOrRounds")) {
+    if (wm === "lastLoses") {
+      // All players except one have reached target → that one loses
+      const notReached = act.filter((id) => !reached.includes(id));
+      if (notReached.length === 1 && act.length > 1 && reached.length > 0) {
+        return { ...g, status: "over", winnerId: null, loserId: notReached[0], tie: false };
+      }
+    }
+    if (wm === "firstN") {
+      const need = wc.winCount ?? (g.order.length - 1);
+      if (reached.length >= need) {
+        // Game over — remaining players lose. Winner is highest score among reached.
+        const safe = reached.filter((id) => act.includes(id));
+        const maxScore = Math.max(...safe.map((id) => g.scores[id]));
+        const topSafe = safe.filter((id) => g.scores[id] === maxScore);
+        return { ...g, status: "over", pot: 0, rolls: [], winnerId: topSafe[0] ?? null, tie: topSafe.length > 1, reachedTarget: reached };
+      }
+    }
+    // Don't end on target reached for these modes — continue
+  }
+
   if ((wc.type === "rounds" || wc.type === "targetOrRounds") && g.turnsTaken >= wc.rounds * g.order.length)
     return finalizeByScore(g);
   if (wc.type === "targetScore" && wc.finishRound && g.targetReachedAt != null && g.turnsTaken >= g.targetReachedAt)
     return finalizeByScore(g);
   return g;
 }
+
 function endTurn(g) {
   const n = g.order.length;
   let idx = g.turnIndex;
   for (let s = 1; s <= n; s++) { const j = (g.turnIndex + s) % n; if (!g.eliminated.includes(g.order[j])) { idx = j; break; } }
-  return checkEnd({ ...g, turnIndex: idx, pot: 0, rolls: [], turnsTaken: g.turnsTaken + 1 });
+  return checkEnd({ ...g, turnIndex: idx, pot: 0, rolls: [], pendingHogCall: null, turnsTaken: g.turnsTaken + 1 });
 }
+
 function reduceGame(g, a) {
   if (!g || g.status === "over") return g;
   const cur = g.order[g.turnIndex];
@@ -56,6 +84,7 @@ function reduceGame(g, a) {
       return { ...g, pot: g.pot - last.pts, rolls: g.rolls.slice(0, -1) };
     }
     case "PIG_OUT": {
+      if (R.pigOutPenalty === null) return g; // ignore — turn continues
       const pen = R.pigOutPenalty || 0;
       const scores = pen ? { ...g.scores, [cur]: Math.max(0, g.scores[cur] - pen) } : g.scores;
       return endTurn({ ...g, scores });
@@ -80,29 +109,49 @@ function reduceGame(g, a) {
       const scores = { ...g.scores, [cur]: total };
       const reached = hasTarget && (wc.mustHitExact ? total === wc.target : total >= wc.target);
       if (reached) {
-        if (wc.type === "targetScore" && wc.finishRound) {
-          const after = g.turnsTaken + 1, N = g.order.length;
-          return endTurn({ ...g, scores, targetReachedAt: g.targetReachedAt ?? Math.ceil(after / N) * N, targetReachedBy: g.targetReachedBy ?? cur });
+        const wm = wc.winMode || "firstTo";
+        if (wm === "firstTo") {
+          if (wc.type === "targetScore" && wc.finishRound) {
+            const after = g.turnsTaken + 1, N = g.order.length;
+            return endTurn({ ...g, scores, targetReachedAt: g.targetReachedAt ?? Math.ceil(after / N) * N, targetReachedBy: g.targetReachedBy ?? cur });
+          }
+          return { ...g, scores, pot: 0, rolls: [], status: "over", winnerId: cur, tie: false };
         }
-        return { ...g, scores, pot: 0, rolls: [], status: "over", winnerId: cur, tie: false };
+        // lastLoses / firstN: mark as reached, keep playing
+        const reachedTarget = [...(g.reachedTarget || []), cur];
+        // If everyone has reached, game should end
+        if (reachedTarget.length >= g.order.length) {
+          return finalizeByScore({ ...g, scores, reachedTarget });
+        }
+        return endTurn({ ...g, scores, reachedTarget });
       }
       return endTurn({ ...g, scores });
     }
     default: return g;
   }
 }
+
 function newGame(order, ruleset, n = 1) {
   return { n, ruleset, order: [...order],
     scores: Object.fromEntries(order.map((id) => [id, ruleset.startingScore || 0])),
     eliminated: [], turnIndex: 0, pot: 0, rolls: [], turnsTaken: 0,
-    targetReachedAt: null, targetReachedBy: null, pendingHogCall: null, status: "playing", winnerId: null, tie: false };
+    targetReachedAt: null, targetReachedBy: null, pendingHogCall: null,
+    reachedTarget: [], status: "playing", winnerId: null, loserId: null, tie: false };
 }
+
 const uid = () => Math.random().toString(36).slice(2, 9);
 const roundOf = (g) => Math.floor(g.turnsTaken / g.order.length) + 1;
+
 function modeLabel(rs) {
   const wc = rs.winCondition;
+  const wm = wc.winMode || "firstTo";
   if (wc.type === "rounds") return `${wc.rounds} rounds · most points`;
   if (wc.type === "targetOrRounds") return `to ${wc.target} or ${wc.rounds} rounds`;
+  if (wm === "lastLoses") return `last to ${wc.target} loses${wc.mustHitExact ? " (exact)" : ""}`;
+  if (wm === "firstN") {
+    const n = wc.winCount ?? (rs.order ? rs.order.length - 1 : 1);
+    return `first ${n} to ${wc.target}${wc.mustHitExact ? " (exact)" : ""}`;
+  }
   return `first to ${wc.target}${wc.mustHitExact ? " (exact)" : ""}${wc.finishRound ? " · finish round" : ""}`;
 }
 
