@@ -3,7 +3,7 @@ import {
   Megaphone,
   Crown, Undo2, Share2, Plus, X, ChevronRight, ChevronDown, Trophy, Settings,
   HelpCircle, Home, RotateCcw, Check, Users, ArrowLeft, Trash2, PartyPopper, Copy,
-  Target, Repeat, Sliders, Skull,
+  Target, Repeat, Sliders, Skull, RefreshCw,
 } from "lucide-react";
 import InstallPrompt from "./InstallPrompt.jsx";
 import { reduceGame, newGame, uid, roundOf, modeLabel } from "./engine.js";
@@ -29,7 +29,9 @@ export default function App() {
   const [history, setHistory] = useState([]);
   const [session, setSession] = useState(null);
   const [modal, setModal] = useState(null);
-  const [gameJustFinished, setGameJustFinished] = useState(false);
+    const [gameJustFinished, setGameJustFinished] = useState(false);
+  const [updateState, setUpdateState] = useState(null); // null | "available" | "activated"
+  const updateRegRef = useRef(null);
   const savedRef = useRef(false);
 
   useEffect(() => {
@@ -41,6 +43,27 @@ export default function App() {
       setReady(true);
     })();
   }, []);
+  // Listen for SW updates
+  useEffect(() => {
+    window.__ptpOnUpdate?.((event) => {
+      if (event.type === "installed" || event.type === "waiting") {
+        setUpdateState("available");
+        updateRegRef.current = event.reg;
+      } else if (event.type === "activated") {
+        setUpdateState("activated");
+        setTimeout(() => setUpdateState(null), 4000);
+      }
+    });
+  }, []);
+
+  const applyUpdate = () => {
+    const reg = updateRegRef.current;
+    if (reg?.waiting) {
+      reg.waiting.postMessage({ type: "SKIP_WAITING" });
+      // controllerchange event will fire → reload handled there
+      setTimeout(() => window.location.reload(), 500);
+    }
+  };
 
   const saveRoster = (r) => { setRoster(r); store.set(K.ROSTER, r); };
   const saveActive = (s) => { setSession(s); store.set(K.ACTIVE, s); };
@@ -83,7 +106,8 @@ export default function App() {
       {view === "home" && <HomeScreen roster={roster} session={session} history={history}
         onNew={() => setView("setup")}
         onResume={() => setView(session?.currentGame?.status === "playing" ? "game" : "summary")}
-        onRoster={() => setModal("roster")} onRules={() => setModal("rules")} onHistory={() => setView("history")} />}
+        onRoster={() => setModal("roster")} onRules={() => setModal("rules")} onHistory={() => setView("history")}
+        updateState={updateState} applyUpdate={applyUpdate} />}
 
       {view === "setup" && <SetupScreen roster={roster} saveRoster={saveRoster}
         onBack={() => setView("home")} onManage={() => setModal("roster")} onStart={startSession} />}
@@ -151,7 +175,7 @@ function Shell({ children }) {
   );
 }
 
-function HomeScreen({ roster, session, history, onNew, onResume, onRoster, onRules, onHistory }) {
+function HomeScreen({ roster, session, history, onNew, onResume, onRoster, onRules, onHistory, updateState, applyUpdate }) {
   const live = session?.currentGame?.status === "playing";
   const [showImportBanner, setShowImportBanner] = useState(false);
   const [imported, setImported] = useState(false);
@@ -191,8 +215,46 @@ function HomeScreen({ roster, session, history, onNew, onResume, onRoster, onRul
     };
     input.click();
   };
+    const [checking, setChecking] = useState(false);
+
+  const handleCheckForUpdates = async () => {
+    setChecking(true);
+    const result = await window.__ptpCheckForUpdates?.();
+    setChecking(false);
+    if (result?.updateAvailable === false && result?.checked) {
+      // No update found — silently done
+    }
+  };
+
   return (
     <div className="pop">
+      {updateState === "available" && (
+        <div style={{
+          marginBottom: 16, padding: "12px 16px", borderRadius: 16,
+          background: "#E3F2FD", border: "1px solid #90CAF9",
+          display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
+        }}>
+          <div style={{ fontWeight: 700, fontSize: 14, color: "#1565C0" }}>
+            {"🔄 New version available"}
+          </div>
+          <button onClick={(e) => { e.stopPropagation(); applyUpdate(); }} style={{
+            padding: "8px 16px", borderRadius: 10, border: "none",
+            background: "#1976D2", color: "#fff", fontWeight: 700, fontSize: 13,
+            cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap",
+          }}>
+            Update & restart
+          </button>
+        </div>
+      )}
+      {updateState === "activated" && (
+        <div style={{
+          marginBottom: 16, padding: "10px 16px", borderRadius: 16,
+          background: "#E8F5E9", border: "1px solid #A5D6A7",
+          textAlign: "center", fontWeight: 700, fontSize: 13, color: "#2E7D32",
+        }}>
+          {"✅ Updated! Enjoy the latest version."}
+        </div>
+      )}
       <header style={{ textAlign: "center", marginTop: 28, marginBottom: 28 }}>
         <div style={{ fontSize: 64, lineHeight: 1 }} className="parade">🐷🐷</div>
         <h1 style={{ fontFamily: "Fredoka", fontWeight: 700, fontSize: 42, color: C.pink, marginTop: 8, letterSpacing: -0.5 }}>Pass The Pigs</h1>
@@ -235,7 +297,11 @@ function HomeScreen({ roster, session, history, onNew, onResume, onRoster, onRul
         <TileButton onClick={onRoster} icon={<Users size={22} />} label="Players" sub={`${roster.length} saved`} />
         <TileButton onClick={onHistory} icon={<Trophy size={22} />} label="History" sub={`${history.length} session${history.length === 1 ? "" : "s"}`} />
       </div>
-      <button onClick={onRules} style={ghostBtn}><HelpCircle size={18} /> How to play</button>
+            <button onClick={onRules} style={ghostBtn}><HelpCircle size={18} /> How to play</button>
+      <button onClick={handleCheckForUpdates} disabled={checking} style={{ ...ghostBtn, opacity: checking ? 0.5 : 1 }}>
+        {checking ? <RotateCcw size={16} className="spin" /> : <RefreshCw size={16} />}
+        {" "}{checking ? "Checking…" : "Check for updates"}
+      </button>
     </div>
   );
 }
