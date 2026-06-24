@@ -821,9 +821,41 @@ function RosterModal({ roster, saveRoster, onClose }) {
         <button onClick={add} style={{ ...iconBtn, background: C.pink, color: "#fff", width: 52 }}><Plus size={22} /></button>
       </div>
       <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-        <button onClick={shareList} style={{ ...smallBtn, flex: 1 }}><Share2 size={16} /> Share list</button>
+        <button onClick={() => setShowSharePanel((v) => !v)} style={{ ...smallBtn, flex: 1 }}><Share2 size={16} /> Share list</button>
         <button onClick={() => setImporting((v) => !v)} style={{ ...smallBtn, flex: 1 }}><Copy size={16} /> Import code</button>
       </div>
+      {showSharePanel && rosterCode && (
+        <div style={{ marginTop: 10, padding: 10, borderRadius: 12, background: C.line }}>
+          <div style={{ fontWeight: 700, fontSize: 12, color: C.inkSoft, marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>
+            Your player code
+          </div>
+          <div style={{ display: "flex", gap: 6 }}>
+            <code style={{
+              flex: 1, padding: "8px 10px", borderRadius: 8, background: C.card,
+              fontSize: 11, fontFamily: "monospace", wordBreak: "break-all",
+              color: C.ink, border: "1px solid " + C.line,
+              userSelect: "all",
+            }}>{rosterCode}</code>
+            <button onClick={copyRosterCode} style={{
+              flexShrink: 0, padding: "8px 12px", borderRadius: 8, border: "none",
+              background: C.pink, color: "#fff", fontWeight: 700, fontSize: 12,
+              cursor: "pointer", fontFamily: "inherit",
+            }}>
+              <Copy size={14} />
+            </button>
+          </div>
+          <p style={{ margin: "6px 0 0", fontSize: 11, color: C.inkSoft, lineHeight: 1.4 }}>
+            Anyone with this code can tap <strong>Import code</strong> to add these players to their app.
+          </p>
+          <button onClick={shareRosterCode} style={{
+            marginTop: 8, padding: "8px 12px", borderRadius: 8, border: "none",
+            background: "transparent", color: C.ink, fontWeight: 600, fontSize: 13,
+            cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 6,
+          }}>
+            <Share2 size={14} /> Share via messages
+          </button>
+        </div>
+      )}
       {importing && (
         <div style={{ marginTop: 10 }}>
           <textarea value={code} onChange={(e) => setCode(e.target.value)} placeholder="Paste a player code…" style={{ ...textInput, height: 64, resize: "none" }} />
