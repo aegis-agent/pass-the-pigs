@@ -1,0 +1,917 @@
+import React, { useState, useEffect, useRef, useMemo } from "react";
+import {
+  Crown, Undo2, Share2, Plus, X, ChevronRight, ChevronDown, Trophy, Settings,
+  HelpCircle, Home, RotateCcw, Check, Users, ArrowLeft, Trash2, PartyPopper, Copy,
+  Target, Repeat, Sliders, Skull,
+} from "lucide-react";
+
+/* ================================================================== *
+ * Pass The Pigs — scorekeeper
+ * Local-first. Live game in React state; roster + history + the
+ * in-progress game persist via the storage adapter below.
+ *
+ * SELF-HOSTING: swap the `store` object for localStorage / a backend.
+ * Nothing else touches persistence. (In the standalone build this is
+ * src/storage.js.)
+ * ================================================================== */
+
+const store = {
+  async get(key) {
+    try { const r = await window.storage.get(key); return r ? JSON.parse(r.value) : null; }
+    catch { return null; }
+  },
+  async set(key, val) { try { await window.storage.set(key, JSON.stringify(val)); } catch {} },
+};
+const K = { ROSTER: "ptp:roster", HISTORY: "ptp:history", ACTIVE: "ptp:active" };
+
+/* ---------- brand tokens ---------- */
+const C = {
+  ink: "#2E1F33", inkSoft: "#7A6B7E", cream: "#FFF7F3", card: "#FFFFFF",
+  pink: "#F2667F", pinkDeep: "#D94E6B", grass: "#2FA85A", grassDeep: "#1F8044",
+  gold: "#F4B740", clay: "#E0623B", brick: "#B23A48", mud: "#8A5A3C", plum: "#6B4FB0", line: "#F0E2E4",
+};
+const SWATCHES = ["#F2667F", "#4F8FD6", "#2FA85A", "#F4B740", "#8C6BD9", "#E0623B", "#3FA6A0", "#D94E9B"];
+const AVATARS = ["🐷", "🐭", "🦊", "🐰", "🐻", "🐸", "🐯", "🐵", "🐱", "🐶", "🦁", "🐮", "🐨", "🐹"];
+
+/* ---------- scoring (see RESEARCH.md for sources) ---------- */
+const SINGLES = [
+  { key: "sider", name: "Sider", pts: 1, tilt: 90, glyph: "🐷" },
+  { key: "razorback", name: "Razorback", pts: 5, tilt: 180, glyph: "🐷" },
+  { key: "trotter", name: "Trotter", pts: 5, tilt: 0, glyph: "🐷" },
+  { key: "snouter", name: "Snouter", pts: 10, tilt: -35, glyph: "🐷" },
+  { key: "jowler", name: "Leaning Jowler", pts: 15, tilt: 55, glyph: "🐷" },
+];
+const DOUBLES = [
+  { key: "dbl_razorback", name: "Double Razorback", pts: 20, tilt: 180 },
+  { key: "dbl_trotter", name: "Double Trotter", pts: 20, tilt: 0 },
+  { key: "dbl_snouter", name: "Double Snouter", pts: 40, tilt: -35 },
+  { key: "dbl_jowler", name: "Double Jowler", pts: 60, tilt: 55 },
+];
+const PTS = Object.fromEntries([...SINGLES, ...DOUBLES].map((o) => [o.key, o.pts]).concat([["kissing", 100]]));
+
+/* ---------- rule presets ---------- */
+const baseRules = (winCondition, extra = {}) => ({
+  startingScore: 0, pigOutPenalty: 0, oinker: "wipeTotal", offTable: "off",
+  piggyback: "eliminate", kissingBacon: false, winCondition, ...extra,
+});
+const PRESETS = [
+  { id: "classic", emoji: "🐖", name: "Classic", desc: "First to 100 — official rules",
+    ruleset: baseRules({ type: "targetScore", target: 100 }) },
+  { id: "speed", emoji: "⚡", name: "Speed", desc: "First to 50 — quick game",
+    ruleset: baseRules({ type: "targetScore", target: 50 }) },
+  { id: "marathon", emoji: "🏁", name: "Marathon", desc: "First to 150",
+    ruleset: baseRules({ type: "targetScore", target: 150 }) },
+  { id: "rounds", emoji: "🔁", name: "10 Rounds", desc: "Most points after 10 rounds",
+    ruleset: baseRules({ type: "rounds", rounds: 10 }, { piggyback: "wipeTotal", offTable: "wipeTurn" }) },
+  { id: "family", emoji: "🧸", name: "Family", desc: "First to 100 — gentle rules for kids",
+    ruleset: baseRules({ type: "targetScore", target: 100 }, { piggyback: "wipeTotal", offTable: "wipeTurn" }) },
+  { id: "tournament", emoji: "🎯", name: "Tournament", desc: "Land exactly on 100",
+    ruleset: baseRules({ type: "targetScore", target: 100, mustHitExact: true }, { offTable: "wipeTotal" }) },
+];
+
+/* ================================================================== *
+ *  PURE GAME ENGINE  (unit-checked — see engine.spec.js)
+ *  In the standalone build this is src/engine.js.
+ * ================================================================== */
+const activeIds = (g) => g.order.filter((id) => !g.eliminated.includes(id));
+
+function finalizeByScore(g) {
+  const act = activeIds(g);
+  const max = Math.max(...act.map((id) => g.scores[id]));
+  const top = act.filter((id) => g.scores[id] === max);
+  return { ...g, status: "over", pot: 0, rolls: [], winnerId: top[0] ?? null, tie: top.length > 1 };
+}
+function checkEnd(g) {
+  const wc = g.ruleset.winCondition;
+  const act = activeIds(g);
+  if (g.order.length >= 2 && act.length === 1) return { ...g, status: "over", winnerId: act[0], tie: false };
+  if (act.length === 0) return { ...g, status: "over", winnerId: null, tie: true };
+  if ((wc.type === "rounds" || wc.type === "targetOrRounds") && g.turnsTaken >= wc.rounds * g.order.length)
+    return finalizeByScore(g);
+  if (wc.type === "targetScore" && wc.finishRound && g.targetReachedAt != null && g.turnsTaken >= g.targetReachedAt)
+    return finalizeByScore(g);
+  return g;
+}
+function endTurn(g) {
+  const n = g.order.length;
+  let idx = g.turnIndex;
+  for (let s = 1; s <= n; s++) { const j = (g.turnIndex + s) % n; if (!g.eliminated.includes(g.order[j])) { idx = j; break; } }
+  return checkEnd({ ...g, turnIndex: idx, pot: 0, rolls: [], turnsTaken: g.turnsTaken + 1 });
+}
+function reduceGame(g, a) {
+  if (!g || g.status === "over") return g;
+  const cur = g.order[g.turnIndex];
+  const wc = g.ruleset.winCondition;
+  const R = g.ruleset;
+  switch (a.type) {
+    case "ADD": { const pts = a.pts ?? PTS[a.key]; return { ...g, pot: g.pot + pts, rolls: [...g.rolls, { key: a.key, pts }] }; }
+    case "UNDO": {
+      if (!g.rolls.length) return g;
+      const last = g.rolls[g.rolls.length - 1];
+      return { ...g, pot: g.pot - last.pts, rolls: g.rolls.slice(0, -1) };
+    }
+    case "PIG_OUT": {
+      const pen = R.pigOutPenalty || 0;
+      const scores = pen ? { ...g.scores, [cur]: Math.max(0, g.scores[cur] - pen) } : g.scores;
+      return endTurn({ ...g, scores });
+    }
+    case "OINKER":    return endTurn(R.oinker === "wipeTurn" ? { ...g } : { ...g, scores: { ...g.scores, [cur]: 0 } });
+    case "OFF_TABLE": return endTurn(R.offTable === "wipeTurn" ? { ...g } : { ...g, scores: { ...g.scores, [cur]: 0 } });
+    case "PIGGYBACK":
+      if (R.piggyback === "eliminate") return endTurn({ ...g, eliminated: [...g.eliminated, cur] });
+      return endTurn({ ...g, scores: { ...g.scores, [cur]: 0 } });
+    case "BANK": {
+      const total = g.scores[cur] + g.pot;
+      const hasTarget = wc.type === "targetScore" || wc.type === "targetOrRounds";
+      if (hasTarget && wc.mustHitExact && total > wc.target) return endTurn({ ...g }); // bust
+      const scores = { ...g.scores, [cur]: total };
+      const reached = hasTarget && (wc.mustHitExact ? total === wc.target : total >= wc.target);
+      if (reached) {
+        if (wc.type === "targetScore" && wc.finishRound) {
+          const after = g.turnsTaken + 1, N = g.order.length;
+          return endTurn({ ...g, scores, targetReachedAt: g.targetReachedAt ?? Math.ceil(after / N) * N, targetReachedBy: g.targetReachedBy ?? cur });
+        }
+        return { ...g, scores, pot: 0, rolls: [], status: "over", winnerId: cur, tie: false };
+      }
+      return endTurn({ ...g, scores });
+    }
+    default: return g;
+  }
+}
+function newGame(order, ruleset, n = 1) {
+  return { n, ruleset, order: [...order],
+    scores: Object.fromEntries(order.map((id) => [id, ruleset.startingScore || 0])),
+    eliminated: [], turnIndex: 0, pot: 0, rolls: [], turnsTaken: 0,
+    targetReachedAt: null, targetReachedBy: null, status: "playing", winnerId: null, tie: false };
+}
+const uid = () => Math.random().toString(36).slice(2, 9);
+const roundOf = (g) => Math.floor(g.turnsTaken / g.order.length) + 1;
+function modeLabel(rs) {
+  const wc = rs.winCondition;
+  if (wc.type === "rounds") return `${wc.rounds} rounds · most points`;
+  if (wc.type === "targetOrRounds") return `to ${wc.target} or ${wc.rounds} rounds`;
+  return `first to ${wc.target}${wc.mustHitExact ? " (exact)" : ""}${wc.finishRound ? " · finish round" : ""}`;
+}
+
+/* ---------- roster share codes (cross-device, no backend) ---------- */
+const encodeRoster = (players) => btoa(String.fromCharCode(...new TextEncoder().encode(
+  JSON.stringify(players.map((p) => ({ n: p.name, a: p.avatar, c: p.color }))))));
+const decodeRoster = (code) =>
+  JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(code.trim()), (ch) => ch.charCodeAt(0))))
+    .map((p) => ({ id: uid(), name: p.n, avatar: p.a || "🐷", color: p.c || SWATCHES[0], gamesPlayed: 0, gamesWon: 0 }));
+
+/* ================================================================== */
+export default function App() {
+  const [ready, setReady] = useState(false);
+  const [view, setView] = useState("home");
+  const [roster, setRoster] = useState([]);
+  const [history, setHistory] = useState([]);
+  const [session, setSession] = useState(null);
+  const [modal, setModal] = useState(null);
+  const savedRef = useRef(false);
+
+  useEffect(() => {
+    (async () => {
+      const [r, h, a] = await Promise.all([store.get(K.ROSTER), store.get(K.HISTORY), store.get(K.ACTIVE)]);
+      setRoster(r || []); setHistory(h || []);
+      if (a?.currentGame?.ruleset && a.currentGame.status === "playing") { setSession(a); setView("game"); }
+      else if (a?.ruleset) setSession(a);
+      setReady(true);
+    })();
+  }, []);
+
+  const saveRoster = (r) => { setRoster(r); store.set(K.ROSTER, r); };
+  const saveActive = (s) => { setSession(s); store.set(K.ACTIVE, s); };
+  const clearActive = () => { setSession(null); store.set(K.ACTIVE, null); };
+  const byId = (id) => roster.find((p) => p.id === id) || { name: "?", avatar: "🐷", color: C.inkSoft };
+
+  const game = session?.currentGame || null;
+  const dispatch = (action) => {
+    if (!session?.currentGame) return;
+    const next = reduceGame(session.currentGame, action);
+    const updated = { ...session, currentGame: next };
+    saveActive(updated);
+    if (next.status === "over") {
+      const gw = { ...session.gameWins };
+      if (!next.tie && next.winnerId) gw[next.winnerId] = (gw[next.winnerId] || 0) + 1;
+      const games = [...session.games, { n: next.n, scores: next.scores, winnerId: next.tie ? null : next.winnerId, eliminated: next.eliminated }];
+      saveActive({ ...updated, gameWins: gw, gamesPlayed: session.gamesPlayed + 1, games });
+      setTimeout(() => setView("over"), 650);
+    }
+  };
+  const startSession = (order, ruleset) => {
+    savedRef.current = false;
+    saveActive({ id: uid(), date: Date.now(), ruleset, playerIds: order, order,
+      gameWins: {}, gamesPlayed: 0, games: [], currentGame: newGame(order, ruleset, 1) });
+    setView("game");
+  };
+
+  if (!ready) return <Shell><StyleTag /><div style={{ ...flexCenter, minHeight: 320, color: C.inkSoft }}>Loading…</div></Shell>;
+
+  return (
+    <Shell>
+      <StyleTag />
+      {view === "home" && <HomeScreen roster={roster} session={session} history={history}
+        onNew={() => setView("setup")}
+        onResume={() => setView(session?.currentGame?.status === "playing" ? "game" : "summary")}
+        onRoster={() => setModal("roster")} onRules={() => setModal("rules")} onHistory={() => setView("history")} />}
+
+      {view === "setup" && <SetupScreen roster={roster} saveRoster={saveRoster}
+        onBack={() => setView("home")} onManage={() => setModal("roster")} onStart={startSession} />}
+
+      {view === "game" && game && <GameScreen game={game} byId={byId} dispatch={dispatch}
+        onMenu={() => setModal("rules")} onQuit={() => { clearActive(); setView("home"); }} />}
+
+      {view === "over" && game && <OverScreen session={session} byId={byId}
+        onNext={() => {
+          const start = session.games.length % session.order.length;
+          const order = session.order.slice(start).concat(session.order.slice(0, start));
+          saveActive({ ...session, currentGame: newGame(order, session.ruleset, session.games.length + 1) });
+          setView("game");
+        }}
+        onFinish={() => { finishSession(); setView("summary"); }} />}
+
+      {view === "summary" && session && <SummaryScreen session={session} byId={byId}
+        onShare={() => shareSession(session, byId)}
+        onRematch={() => startSession(session.order, session.ruleset)}
+        onHome={() => { clearActive(); setView("home"); }} />}
+
+      {view === "history" && <HistoryScreen history={history}
+        setHistory={(h) => { setHistory(h); store.set(K.HISTORY, h); }} onBack={() => setView("home")} />}
+
+      {modal === "roster" && <RosterModal roster={roster} saveRoster={saveRoster} onClose={() => setModal(null)} />}
+      {modal === "rules" && <RulesModal onClose={() => setModal(null)} />}
+    </Shell>
+  );
+
+  function finishSession() {
+    if (savedRef.current) return;
+    savedRef.current = true;
+    const record = { id: session.id, date: session.date, ruleset: session.ruleset,
+      playerIds: session.playerIds, gameWins: session.gameWins, games: session.games,
+      players: session.playerIds.map((id) => { const p = byId(id); return { name: p.name, avatar: p.avatar, color: p.color }; }) };
+    const h = [record, ...history].slice(0, 40);
+    setHistory(h); store.set(K.HISTORY, h);
+    const wins = session.gameWins;
+    saveRoster(roster.map((p) => session.playerIds.includes(p.id)
+      ? { ...p, gamesPlayed: (p.gamesPlayed || 0) + session.games.length, gamesWon: (p.gamesWon || 0) + (wins[p.id] || 0) } : p));
+  }
+}
+
+/* ---------------- sharing ---------------- */
+const leaderboard = (gameWins, ids, byId) =>
+  ids.map((id) => ({ id, name: byId(id).name, avatar: byId(id).avatar, wins: gameWins[id] || 0 }))
+    .sort((a, b) => b.wins - a.wins);
+async function shareSession(session, byId) {
+  const lb = leaderboard(session.gameWins, session.playerIds, byId);
+  const lines = lb.map((p, i) => `${i === 0 && p.wins > 0 ? "🏆" : `${i + 1}.`} ${p.avatar} ${p.name} — ${p.wins} ${p.wins === 1 ? "win" : "wins"}`);
+  const text = `🐷 Pass The Pigs\n${session.games.length} game${session.games.length === 1 ? "" : "s"} · ${modeLabel(session.ruleset)}\n\n${lines.join("\n")}`;
+  try { if (navigator.share) { await navigator.share({ title: "Pass The Pigs", text }); return; } } catch {}
+  try { await navigator.clipboard.writeText(text); alert("Results copied to clipboard!"); } catch { alert(text); }
+}
+
+/* ================================================================== *
+ *  SCREENS
+ * ================================================================== */
+function Shell({ children }) {
+  return (
+    <div style={{ background: C.cream, minHeight: "100vh", fontFamily: "Nunito, system-ui, sans-serif", color: C.ink }}>
+      <div style={{ maxWidth: 480, margin: "0 auto", padding: 16 }}>{children}</div>
+    </div>
+  );
+}
+
+function HomeScreen({ roster, session, history, onNew, onResume, onRoster, onRules, onHistory }) {
+  const live = session?.currentGame?.status === "playing";
+  return (
+    <div className="pop">
+      <header style={{ textAlign: "center", marginTop: 28, marginBottom: 28 }}>
+        <div style={{ fontSize: 64, lineHeight: 1 }} className="parade">🐷🐷</div>
+        <h1 style={{ fontFamily: "Fredoka", fontWeight: 700, fontSize: 42, color: C.pink, marginTop: 8, letterSpacing: -0.5 }}>Pass The Pigs</h1>
+        <p style={{ color: C.inkSoft, fontWeight: 600 }}>Tap the pigs. Bank your points. Win the bacon.</p>
+      </header>
+      {live && <BigButton onClick={onResume} bg={C.gold} fg={C.ink}><RotateCcw size={22} /> Resume game {session.currentGame.n}</BigButton>}
+      <BigButton onClick={onNew} bg={C.pink} fg="#fff"><Plus size={24} /> New game</BigButton>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 12 }}>
+        <TileButton onClick={onRoster} icon={<Users size={22} />} label="Players" sub={`${roster.length} saved`} />
+        <TileButton onClick={onHistory} icon={<Trophy size={22} />} label="History" sub={`${history.length} session${history.length === 1 ? "" : "s"}`} />
+      </div>
+      <button onClick={onRules} style={ghostBtn}><HelpCircle size={18} /> How to play</button>
+    </div>
+  );
+}
+
+function SetupScreen({ roster, saveRoster, onBack, onStart, onManage }) {
+  const [picked, setPicked] = useState([]);
+  const [name, setName] = useState("");
+  const [presetId, setPresetId] = useState("classic");
+  const [ruleset, setRuleset] = useState(() => structuredClone(PRESETS[0].ruleset));
+  const [showCustom, setShowCustom] = useState(false);
+
+  const wc = ruleset.winCondition;
+  const setWc = (patch) => setRuleset((r) => ({ ...r, winCondition: { ...r.winCondition, ...patch } }));
+  const choosePreset = (p) => { setPresetId(p.id); setRuleset(structuredClone(p.ruleset)); };
+
+  const toggle = (id) => setPicked((p) => p.includes(id) ? p.filter((x) => x !== id) : [...p, id]);
+  const addPlayer = () => {
+    const nm = name.trim(); if (!nm) return;
+    const used = new Set(roster.map((p) => p.color));
+    const color = SWATCHES.find((c) => !used.has(c)) || SWATCHES[roster.length % SWATCHES.length];
+    const np = { id: uid(), name: nm, avatar: AVATARS[roster.length % AVATARS.length], color, gamesPlayed: 0, gamesWon: 0 };
+    saveRoster([...roster, np]); setPicked((p) => [...p, np.id]); setName("");
+  };
+  const setType = (type) => {
+    if (type === "targetScore") setRuleset((r) => ({ ...r, winCondition: { type, target: wc.target || 100, mustHitExact: false, finishRound: false } }));
+    if (type === "rounds") setRuleset((r) => ({ ...r, winCondition: { type, rounds: wc.rounds || 10 } }));
+    if (type === "targetOrRounds") setRuleset((r) => ({ ...r, winCondition: { type, target: wc.target || 100, rounds: wc.rounds || 10 } }));
+    setPresetId("custom");
+  };
+  const touch = () => setPresetId("custom");
+
+  return (
+    <div className="pop">
+      <TopBar title="New game" onBack={onBack} right={<button onClick={onManage} style={iconBtn}><Settings size={20} /></button>} />
+
+      <SectionLabel>Who's playing? <span style={{ color: C.inkSoft, fontWeight: 600 }}>tap in turn order</span></SectionLabel>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+        {roster.map((p) => {
+          const i = picked.indexOf(p.id), on = i >= 0;
+          return (
+            <button key={p.id} onClick={() => toggle(p.id)} style={{ ...chip, borderColor: on ? p.color : C.line,
+              background: on ? p.color : "#fff", color: on ? "#fff" : C.ink, boxShadow: on ? `0 4px 0 ${shade(p.color)}` : "none" }}>
+              <span style={{ fontSize: 20 }}>{p.avatar}</span>{p.name}{on && <span style={orderBadge}>{i + 1}</span>}
+            </button>
+          );
+        })}
+        {roster.length === 0 && <p style={{ color: C.inkSoft }}>No players yet — add one below.</p>}
+      </div>
+      <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+        <input value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addPlayer()} placeholder="Add a player…" style={textInput} />
+        <button onClick={addPlayer} style={{ ...iconBtn, background: C.pink, color: "#fff", width: 52 }}><Plus size={22} /></button>
+      </div>
+
+      <SectionLabel style={{ marginTop: 26 }}>Game mode</SectionLabel>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        {PRESETS.map((p) => (
+          <button key={p.id} onClick={() => choosePreset(p)} style={{ ...presetCard,
+            borderColor: presetId === p.id ? C.ink : C.line, boxShadow: `0 4px 0 ${presetId === p.id ? C.ink : C.line}` }}>
+            <div style={{ fontSize: 22 }}>{p.emoji}</div>
+            <div style={{ fontWeight: 800, fontSize: 15 }}>{p.name}</div>
+            <div style={{ color: C.inkSoft, fontWeight: 600, fontSize: 12, lineHeight: 1.2 }}>{p.desc}</div>
+          </button>
+        ))}
+      </div>
+
+      <button onClick={() => setShowCustom((v) => !v)} style={{ ...ghostBtn, marginTop: 14, justifyContent: "space-between", paddingLeft: 4, paddingRight: 4 }}>
+        <span style={{ display: "flex", alignItems: "center", gap: 8 }}><Sliders size={18} /> Customize rules {presetId === "custom" && <span style={tag}>custom</span>}</span>
+        <ChevronDown size={18} style={{ transform: showCustom ? "rotate(180deg)" : "none", transition: "transform .2s" }} />
+      </button>
+
+      {showCustom && (
+        <Card style={{ marginTop: 4 }}>
+          <CtlRow label="Win condition">
+            <Segmented value={wc.type} onChange={setType} options={[
+              { v: "targetScore", l: "Reach score" }, { v: "rounds", l: "N rounds" }, { v: "targetOrRounds", l: "Either" }]} />
+          </CtlRow>
+          {(wc.type === "targetScore" || wc.type === "targetOrRounds") && (
+            <CtlRow label="Target score">
+              <Stepper value={wc.target} onChange={(v) => { setWc({ target: v }); touch(); }} step={10} min={10} chips={[50, 100, 150]} />
+            </CtlRow>
+          )}
+          {(wc.type === "rounds" || wc.type === "targetOrRounds") && (
+            <CtlRow label="Number of rounds">
+              <Stepper value={wc.rounds} onChange={(v) => { setWc({ rounds: v }); touch(); }} step={1} min={1} chips={[5, 10, 15]} />
+            </CtlRow>
+          )}
+          {wc.type === "targetScore" && (
+            <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+              <CheckPill on={!!wc.mustHitExact} onClick={() => { setWc({ mustHitExact: !wc.mustHitExact }); touch(); }} label="Land exactly" />
+              <CheckPill on={!!wc.finishRound} onClick={() => { setWc({ finishRound: !wc.finishRound }); touch(); }} label="Finish the round" />
+            </div>
+          )}
+          <CtlRow label="Pig Out">
+            <Segmented value={ruleset.pigOutPenalty ? "pen" : "turn"} onChange={(v) => { setRuleset((r) => ({ ...r, pigOutPenalty: v === "pen" ? 5 : 0 })); touch(); }}
+              options={[{ v: "turn", l: "Lose turn" }, { v: "pen", l: "Lose turn −5" }]} />
+          </CtlRow>
+          <CtlRow label="Oinker (pigs touching)">
+            <Segmented value={ruleset.oinker} onChange={(v) => { setRuleset((r) => ({ ...r, oinker: v })); touch(); }}
+              options={[{ v: "wipeTotal", l: "Lose everything" }, { v: "wipeTurn", l: "Lose turn" }]} />
+          </CtlRow>
+          <CtlRow label="Off the table">
+            <Segmented value={ruleset.offTable} onChange={(v) => { setRuleset((r) => ({ ...r, offTable: v })); touch(); }}
+              options={[{ v: "off", l: "Ignore" }, { v: "wipeTurn", l: "Lose turn" }, { v: "wipeTotal", l: "Lose all" }]} />
+          </CtlRow>
+          <CtlRow label="Piggyback (one on the other)">
+            <Segmented value={ruleset.piggyback} onChange={(v) => { setRuleset((r) => ({ ...r, piggyback: v })); touch(); }}
+              options={[{ v: "eliminate", l: "Out of game" }, { v: "wipeTotal", l: "Lose all" }, { v: "off", l: "Ignore" }]} />
+          </CtlRow>
+          <CtlRow label="Kissing Bacon (snouts touch)">
+            <Segmented value={ruleset.kissingBacon ? "on" : "off"} onChange={(v) => { setRuleset((r) => ({ ...r, kissingBacon: v === "on" })); touch(); }}
+              options={[{ v: "off", l: "Off" }, { v: "on", l: "Bonus +100" }]} />
+          </CtlRow>
+        </Card>
+      )}
+
+      <BigButton disabled={picked.length < 2} onClick={() => onStart(picked, ruleset)}
+        bg={picked.length < 2 ? C.line : C.grass} fg={picked.length < 2 ? C.inkSoft : "#fff"} style={{ marginTop: 22 }}>
+        {picked.length < 2 ? "Pick at least 2 players" : <>Start game <ChevronRight size={22} /></>}
+      </BigButton>
+    </div>
+  );
+}
+
+function GameScreen({ game, byId, dispatch, onMenu, onQuit }) {
+  const R = game.ruleset, wc = R.winCondition;
+  const curId = game.order[game.turnIndex];
+  const cur = byId(curId);
+  const [floats, setFloats] = useState([]);
+  const [bump, setBump] = useState(0);
+  const [confirmQuit, setConfirmQuit] = useState(false);
+
+  const add = (o) => {
+    dispatch({ type: "ADD", key: o.key, pts: o.pts });
+    const id = uid();
+    setFloats((f) => [...f, { id, amt: o.pts }]); setBump((b) => b + 1);
+    setTimeout(() => setFloats((f) => f.filter((x) => x.id !== id)), 750);
+  };
+  const projected = game.scores[curId] + game.pot;
+  const reaches = (wc.type === "targetScore" || wc.type === "targetOrRounds") &&
+    (wc.mustHitExact ? projected === wc.target : projected >= wc.target);
+
+  const header = wc.type === "rounds" ? `round ${Math.min(roundOf(game), wc.rounds)}/${wc.rounds} · most points`
+    : wc.type === "targetOrRounds" ? `to ${wc.target} · rd ${Math.min(roundOf(game), wc.rounds)}/${wc.rounds}`
+    : `first to ${wc.target}${wc.mustHitExact ? " exactly" : ""}`;
+
+  const dangers = [
+    { type: "PIG_OUT", bg: C.clay, title: "Pig Out", sub: R.pigOutPenalty ? "lose turn −5" : "lose this turn" },
+    { type: "OINKER", bg: C.brick, title: "Oinker", sub: R.oinker === "wipeTurn" ? "lose this turn" : "lose ALL points" },
+    ...(R.offTable !== "off" ? [{ type: "OFF_TABLE", bg: C.mud, title: "Off table", sub: R.offTable === "wipeTurn" ? "lose this turn" : "lose ALL points" }] : []),
+    ...(R.piggyback !== "off" ? [{ type: "PIGGYBACK", bg: C.plum, title: "Piggyback", sub: R.piggyback === "eliminate" ? "out of game!" : "lose ALL points" }] : []),
+  ];
+
+  return (
+    <div className="pop">
+      <div style={{ ...flexBetween, marginBottom: 12 }}>
+        <div style={{ fontFamily: "Fredoka", fontWeight: 600, color: C.inkSoft }}>Game {game.n} · <span style={{ color: C.ink }}>{header}</span></div>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button onClick={onMenu} style={iconBtnSm}><HelpCircle size={18} /></button>
+          <button onClick={() => setConfirmQuit(true)} style={iconBtnSm}><X size={18} /></button>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 4, marginBottom: 14 }}>
+        {game.order.map((id, i) => {
+          const p = byId(id), on = i === game.turnIndex, out = game.eliminated.includes(id);
+          return (
+            <div key={id} style={{ flex: "0 0 auto", padding: "6px 12px", borderRadius: 14, fontWeight: 800,
+              background: on ? p.color : "#fff", color: on ? "#fff" : C.ink, border: `2px solid ${on ? p.color : C.line}`,
+              display: "flex", alignItems: "center", gap: 6, minWidth: 84, justifyContent: "center", opacity: out ? 0.45 : 1 }}>
+              <span>{out ? "💀" : p.avatar}</span>
+              <span style={{ fontFamily: "Fredoka", fontSize: 18, textDecoration: out ? "line-through" : "none" }}>{game.scores[id]}</span>
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ position: "relative", background: cur.color, borderRadius: 28, padding: 20, textAlign: "center", color: "#fff", boxShadow: `0 8px 0 ${shade(cur.color)}` }}>
+        <div style={{ fontWeight: 800, fontSize: 20, opacity: 0.95 }}>{cur.avatar} {cur.name}</div>
+        <div style={{ fontWeight: 700, fontSize: 13, textTransform: "uppercase", letterSpacing: 1, opacity: 0.8, marginTop: 6 }}>This turn</div>
+        <div key={bump} className="potpulse" style={{ fontFamily: "Fredoka", fontWeight: 700, fontSize: 76, lineHeight: 1 }}>{game.pot}</div>
+        <div style={{ fontWeight: 700, opacity: 0.85, fontSize: 14 }}>
+          {game.pot === 0 ? "Tap a pig below 🐷" : `Bank → ${projected}${reaches ? " · WINS! 🏆" : ""}`}
+        </div>
+        {floats.map((f) => (
+          <div key={f.id} className="floatup" style={{ position: "absolute", left: "50%", top: 78, transform: "translateX(-50%)", fontFamily: "Fredoka", fontWeight: 700, fontSize: 34, color: "#fff", pointerEvents: "none" }}>+{f.amt}</div>
+        ))}
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 16 }}>
+        {SINGLES.map((o) => <ScoreBtn key={o.key} o={o} onClick={() => add(o)} />)}
+        <div style={{ gridColumn: "1 / -1", display: "flex", alignItems: "center", gap: 8, margin: "2px 0" }}>
+          <span style={{ height: 2, background: C.line, flex: 1 }} />
+          <span style={{ color: C.inkSoft, fontWeight: 800, fontSize: 12, textTransform: "uppercase", letterSpacing: 1 }}>Doubles · both pigs</span>
+          <span style={{ height: 2, background: C.line, flex: 1 }} />
+        </div>
+        {DOUBLES.map((o) => <ScoreBtn key={o.key} o={o} dbl onClick={() => add(o)} />)}
+        {R.kissingBacon && (
+          <button onClick={() => add({ key: "kissing", pts: 100, name: "Kissing Bacon" })} className="press" style={{ gridColumn: "1 / -1",
+            background: "#fff", border: `2px solid ${C.pink}`, borderRadius: 20, padding: "12px", cursor: "pointer", boxShadow: `0 4px 0 ${C.pinkDeep}`, display: "flex", alignItems: "center", justifyContent: "center", gap: 10 }}>
+            <span style={{ fontSize: 22 }}>😘🐷</span>
+            <span style={{ fontWeight: 800 }}>Kissing Bacon</span>
+            <span style={{ fontFamily: "Fredoka", fontWeight: 700, fontSize: 22, color: C.pink }}>+100</span>
+          </button>
+        )}
+      </div>
+
+      <BigButton disabled={game.pot === 0} onClick={() => dispatch({ type: "BANK" })}
+        bg={game.pot === 0 ? C.line : C.grass} fg={game.pot === 0 ? C.inkSoft : "#fff"} style={{ marginTop: 16 }}>
+        <Check size={24} /> {game.pot === 0 ? "Bank" : `Bank ${game.pot} point${game.pot === 1 ? "" : "s"}`}
+      </BigButton>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 10 }}>
+        {dangers.map((d) => <DangerBtn key={d.type} onClick={() => dispatch({ type: d.type })} bg={d.bg} title={d.title} sub={d.sub} />)}
+      </div>
+      <button onClick={() => dispatch({ type: "UNDO" })} disabled={!game.rolls.length} style={{ ...ghostBtn, opacity: game.rolls.length ? 1 : 0.4 }}>
+        <Undo2 size={18} /> Undo last
+      </button>
+
+      {confirmQuit && (
+        <Sheet onClose={() => setConfirmQuit(false)} title="Leave this game?">
+          <p style={{ color: C.inkSoft, marginBottom: 16 }}>Scores so far will be lost. You can also just close the tab — your game is saved and will resume.</p>
+          <BigButton onClick={onQuit} bg={C.brick} fg="#fff"><Trash2 size={20} /> Quit to menu</BigButton>
+          <button onClick={() => setConfirmQuit(false)} style={ghostBtn}>Keep playing</button>
+        </Sheet>
+      )}
+    </div>
+  );
+}
+
+function OverScreen({ session, byId, onNext, onFinish }) {
+  const g = session.games[session.games.length - 1];
+  const rows = Object.keys(g.scores).map((id) => ({ id, ...byId(id), score: g.scores[id], out: (g.eliminated || []).includes(id) }))
+    .sort((a, b) => b.score - a.score);
+  const tie = !g.winnerId;
+  const top = rows.filter((r) => !r.out && r.score === rows.filter((x) => !x.out)[0]?.score);
+  const winner = tie ? null : byId(g.winnerId);
+  const lb = leaderboard(session.gameWins, session.playerIds, byId);
+
+  return (
+    <div className="pop">
+      <Confetti />
+      <div className="bouncein" style={{ textAlign: "center", marginTop: 18, marginBottom: 8, position: "relative", zIndex: 2 }}>
+        {tie ? (
+          <>
+            <div style={{ fontSize: 60, lineHeight: 1 }}>🤝</div>
+            <h2 style={{ fontFamily: "Fredoka", fontWeight: 700, fontSize: 32 }}>It's a tie!</h2>
+            <p style={{ color: C.inkSoft, fontWeight: 700 }}>{top.map((t) => `${t.avatar} ${t.name}`).join(" & ")} · {top[0]?.score} points</p>
+          </>
+        ) : (
+          <>
+            <Crown size={40} color={C.gold} style={{ marginBottom: -4 }} />
+            <div style={{ fontSize: 72, lineHeight: 1 }}>{winner.avatar}</div>
+            <h2 style={{ fontFamily: "Fredoka", fontWeight: 700, fontSize: 34, color: winner.color }}>{winner.name} wins!</h2>
+            <p style={{ color: C.inkSoft, fontWeight: 700 }}>Game {g.n} · {g.scores[g.winnerId]} points</p>
+          </>
+        )}
+      </div>
+
+      <Card>
+        <SectionLabel>This game</SectionLabel>
+        {rows.map((r, i) => (
+          <div key={r.id} style={{ ...flexBetween, padding: "8px 4px", borderBottom: i < rows.length - 1 ? `1px solid ${C.line}` : "none", opacity: r.out ? 0.5 : 1 }}>
+            <span style={{ fontWeight: 800 }}>{i + 1}. {r.out ? "💀" : r.avatar} {r.name}{r.out ? " (out)" : ""}</span>
+            <span style={{ fontFamily: "Fredoka", fontWeight: 700, fontSize: 20 }}>{r.score}</span>
+          </div>
+        ))}
+      </Card>
+
+      <Card style={{ marginTop: 12 }}>
+        <SectionLabel>Session · games won</SectionLabel>
+        {lb.map((p, i) => (
+          <div key={p.id} style={{ ...flexBetween, padding: "6px 4px" }}>
+            <span style={{ fontWeight: 800 }}>{i === 0 && p.wins > 0 ? "🏆" : `${i + 1}.`} {p.avatar} {p.name}</span>
+            <span style={{ fontFamily: "Fredoka", fontWeight: 700, fontSize: 20 }}>{p.wins}</span>
+          </div>
+        ))}
+      </Card>
+
+      <BigButton onClick={onNext} bg={C.pink} fg="#fff" style={{ marginTop: 18 }}><Plus size={22} /> Play next game</BigButton>
+      <BigButton onClick={onFinish} bg="#fff" fg={C.ink} style={{ border: `2px solid ${C.line}` }}><Trophy size={20} /> Finish session</BigButton>
+    </div>
+  );
+}
+
+function SummaryScreen({ session, byId, onShare, onRematch, onHome }) {
+  const lb = leaderboard(session.gameWins, session.playerIds, byId);
+  const champ = lb[0];
+  return (
+    <div className="pop">
+      <div style={{ textAlign: "center", marginTop: 22, marginBottom: 10 }}>
+        <PartyPopper size={36} color={C.gold} />
+        <h2 style={{ fontFamily: "Fredoka", fontWeight: 700, fontSize: 30, marginTop: 4 }}>Session complete</h2>
+        {champ?.wins > 0 && <p style={{ color: C.inkSoft, fontWeight: 700 }}>{champ.avatar} {champ.name} takes the crown 👑</p>}
+        <p style={{ color: C.inkSoft, fontWeight: 600 }}>{session.games.length} games · {modeLabel(session.ruleset)}</p>
+      </div>
+      <Card>
+        {lb.map((p, i) => (
+          <div key={p.id} style={{ ...flexBetween, padding: "10px 4px", borderBottom: i < lb.length - 1 ? `1px solid ${C.line}` : "none" }}>
+            <span style={{ fontWeight: 800, fontSize: 17 }}>{i === 0 && p.wins > 0 ? "🏆" : `${i + 1}.`} {p.avatar} {p.name}</span>
+            <span style={{ fontFamily: "Fredoka", fontWeight: 700, fontSize: 22 }}>{p.wins}</span>
+          </div>
+        ))}
+      </Card>
+      <BigButton onClick={onShare} bg={C.ink} fg="#fff" style={{ marginTop: 18 }}><Share2 size={20} /> Share results</BigButton>
+      <BigButton onClick={onRematch} bg={C.pink} fg="#fff"><RotateCcw size={20} /> Rematch (same players)</BigButton>
+      <button onClick={onHome} style={ghostBtn}><Home size={18} /> Back to menu</button>
+    </div>
+  );
+}
+
+function HistoryScreen({ history, setHistory, onBack }) {
+  const [open, setOpen] = useState(null);
+  return (
+    <div className="pop">
+      <TopBar title="History" onBack={onBack}
+        right={history.length ? <button onClick={() => { if (confirm("Clear all history?")) setHistory([]); }} style={iconBtn}><Trash2 size={18} /></button> : null} />
+      {history.length === 0 && (
+        <div style={{ textAlign: "center", color: C.inkSoft, marginTop: 60 }}>
+          <div style={{ fontSize: 48 }}>🐷</div>
+          <p style={{ fontWeight: 700, marginTop: 8 }}>No sessions yet.</p>
+          <p>Finish a session and it'll show up here.</p>
+        </div>
+      )}
+      {history.map((s) => {
+        const find = (id) => s.players[s.playerIds.indexOf(id)] || { name: "?", avatar: "🐷" };
+        const lb = leaderboard(s.gameWins, s.playerIds, find);
+        const champ = lb[0];
+        return (
+          <Card key={s.id} style={{ marginTop: 12 }}>
+            <button onClick={() => setOpen(open === s.id ? null : s.id)} style={{ ...flexBetween, width: "100%", background: "none", border: "none", padding: 0, cursor: "pointer", textAlign: "left" }}>
+              <div>
+                <div style={{ fontWeight: 800 }}>{champ?.wins > 0 ? `🏆 ${champ.avatar} ${champ.name}` : "Tied"}</div>
+                <div style={{ color: C.inkSoft, fontWeight: 600, fontSize: 13 }}>
+                  {new Date(s.date).toLocaleDateString(undefined, { month: "short", day: "numeric" })} · {s.games.length} games · {s.players.map((p) => p.avatar).join("")}
+                </div>
+              </div>
+              <ChevronRight size={20} color={C.inkSoft} style={{ transform: open === s.id ? "rotate(90deg)" : "none", transition: "transform .2s" }} />
+            </button>
+            {open === s.id && (
+              <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.line}` }}>
+                {lb.map((p, i) => (
+                  <div key={p.id} style={{ ...flexBetween, padding: "4px 0" }}>
+                    <span style={{ fontWeight: 700 }}>{i + 1}. {p.avatar} {p.name}</span>
+                    <span style={{ fontWeight: 800 }}>{p.wins} {p.wins === 1 ? "win" : "wins"}</span>
+                  </div>
+                ))}
+                <button onClick={() => shareSession(s, find)} style={{ ...ghostBtn, marginTop: 8 }}><Share2 size={16} /> Share</button>
+              </div>
+            )}
+          </Card>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ---------------- modals ---------------- */
+function RosterModal({ roster, saveRoster, onClose }) {
+  const [edit, setEdit] = useState(null);
+  const [name, setName] = useState("");
+  const [importing, setImporting] = useState(false);
+  const [code, setCode] = useState("");
+  const add = () => {
+    const nm = name.trim(); if (!nm) return;
+    const used = new Set(roster.map((p) => p.color));
+    const color = SWATCHES.find((c) => !used.has(c)) || SWATCHES[roster.length % SWATCHES.length];
+    saveRoster([...roster, { id: uid(), name: nm, avatar: AVATARS[roster.length % AVATARS.length], color, gamesPlayed: 0, gamesWon: 0 }]);
+    setName("");
+  };
+  const update = (id, patch) => saveRoster(roster.map((p) => p.id === id ? { ...p, ...patch } : p));
+  const remove = (id) => { if (confirm("Remove this player? Their saved name and stats go too.")) saveRoster(roster.filter((p) => p.id !== id)); };
+  const shareList = async () => {
+    if (!roster.length) return;
+    const code = encodeRoster(roster);
+    try { if (navigator.share) { await navigator.share({ title: "Pass The Pigs players", text: `🐷 Our players — import this code in the app:\n\n${code}` }); return; } } catch {}
+    try { await navigator.clipboard.writeText(code); alert("Player code copied!"); } catch { alert(code); }
+  };
+  const doImport = () => {
+    try {
+      const incoming = decodeRoster(code);
+      const names = new Set(roster.map((p) => p.name.toLowerCase()));
+      saveRoster([...roster, ...incoming.filter((p) => !names.has(p.name.toLowerCase()))]);
+      setImporting(false); setCode("");
+    } catch { alert("That code didn't work — check you copied all of it."); }
+  };
+  return (
+    <Sheet onClose={onClose} title="Players">
+      <p style={{ color: C.inkSoft, fontSize: 14, marginTop: -6, marginBottom: 12 }}>Saved on this device — pick them instantly next time.</p>
+      <div style={{ maxHeight: 300, overflowY: "auto", marginBottom: 12 }}>
+        {roster.map((p) => (
+          <div key={p.id} style={{ background: "#fff", borderRadius: 16, padding: 10, marginBottom: 8, border: `1px solid ${C.line}` }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <span style={{ width: 14, height: 14, borderRadius: 99, background: p.color, flex: "0 0 auto" }} />
+              {edit === p.id ? (
+                <input autoFocus defaultValue={p.name} onBlur={(e) => { update(p.id, { name: e.target.value.trim() || p.name }); setEdit(null); }}
+                  onKeyDown={(e) => e.key === "Enter" && e.target.blur()} style={{ ...textInput, padding: "6px 10px" }} />
+              ) : (
+                <button onClick={() => setEdit(p.id)} style={{ flex: 1, background: "none", border: "none", textAlign: "left", fontWeight: 800, fontSize: 16, cursor: "pointer" }}>{p.avatar} {p.name}</button>
+              )}
+              <span style={{ color: C.inkSoft, fontWeight: 700, fontSize: 13 }}>{p.gamesWon || 0}🏆</span>
+              <button onClick={() => remove(p.id)} style={{ ...iconBtnSm, color: C.brick }}><Trash2 size={16} /></button>
+            </div>
+            {edit === p.id && (
+              <div style={{ marginTop: 8 }}>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 6 }}>
+                  {AVATARS.map((a) => <button key={a} onClick={() => update(p.id, { avatar: a })} style={{ fontSize: 20, padding: 4, borderRadius: 8, border: `2px solid ${p.avatar === a ? C.ink : "transparent"}`, background: C.cream, cursor: "pointer" }}>{a}</button>)}
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  {SWATCHES.map((c) => <button key={c} onClick={() => update(p.id, { color: c })} style={{ width: 26, height: 26, borderRadius: 99, background: c, border: `3px solid ${p.color === c ? C.ink : "#fff"}`, cursor: "pointer" }} />)}
+                </div>
+              </div>
+            )}
+          </div>
+        ))}
+        {roster.length === 0 && <p style={{ color: C.inkSoft }}>No players yet.</p>}
+      </div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <input value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} placeholder="Add a player…" style={textInput} />
+        <button onClick={add} style={{ ...iconBtn, background: C.pink, color: "#fff", width: 52 }}><Plus size={22} /></button>
+      </div>
+      <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+        <button onClick={shareList} style={{ ...smallBtn, flex: 1 }}><Share2 size={16} /> Share list</button>
+        <button onClick={() => setImporting((v) => !v)} style={{ ...smallBtn, flex: 1 }}><Copy size={16} /> Import code</button>
+      </div>
+      {importing && (
+        <div style={{ marginTop: 10 }}>
+          <textarea value={code} onChange={(e) => setCode(e.target.value)} placeholder="Paste a player code…" style={{ ...textInput, height: 64, resize: "none" }} />
+          <BigButton disabled={!code.trim()} onClick={doImport} bg={code.trim() ? C.grass : C.line} fg={code.trim() ? "#fff" : C.inkSoft} style={{ marginTop: 8 }}>Add these players</BigButton>
+        </div>
+      )}
+    </Sheet>
+  );
+}
+
+function RulesModal({ onClose }) {
+  return (
+    <Sheet onClose={onClose} title="How to play">
+      <p style={{ color: C.inkSoft, marginBottom: 14 }}>On your turn, toss both pigs as many times as you dare. Tap how they land to stack up points — then <b style={{ color: C.grass }}>Bank</b> before your luck runs out.</p>
+      <SectionLabel>Each toss</SectionLabel>
+      <RuleRow n="1" t="Sider" d="both pigs on the same side" />
+      <RuleRow n="5" t="Razorback / Trotter" d="on its back / standing up" />
+      <RuleRow n="10" t="Snouter" d="balanced on its snout" />
+      <RuleRow n="15" t="Leaning Jowler" d="snout + ear, the show-off" />
+      <RuleRow n="20–60" t="Doubles" d="both pigs strike the same pose" />
+      <div style={{ height: 12 }} />
+      <SectionLabel>Watch out</SectionLabel>
+      <RuleRow n="0" t="Pig Out" d="pigs on opposite sides — lose this turn's points" c={C.clay} />
+      <RuleRow n="0" t="Oinker" d="pigs touching — lose ALL your points" c={C.brick} />
+      <RuleRow n="—" t="Piggyback" d="one pig on the other — you're out (classic rule)" c={C.plum} />
+      <p style={{ color: C.inkSoft, marginTop: 14, fontSize: 14 }}>Mixed toss (two different pigs)? Tap both — the points just add up. Choose a game mode at setup, or open <b>Customize rules</b> for house rules.</p>
+    </Sheet>
+  );
+}
+
+/* ================================================================== *
+ *  UI PRIMITIVES
+ * ================================================================== */
+function ScoreBtn({ o, dbl, onClick }) {
+  return (
+    <button onClick={onClick} className="press" style={{ background: "#fff", border: `2px solid ${dbl ? C.gold : C.line}`, borderRadius: 20,
+      padding: "12px 10px", display: "flex", alignItems: "center", gap: 10, cursor: "pointer", boxShadow: `0 4px 0 ${dbl ? "#E0A52E" : C.line}`, minHeight: 64, textAlign: "left" }}>
+      <span style={{ fontSize: 26, display: "inline-block", transform: `rotate(${o.tilt}deg)`, width: 30, textAlign: "center" }}>
+        🐷{dbl ? <span style={{ fontSize: 14 }}>🐷</span> : null}
+      </span>
+      <span style={{ flex: 1 }}>
+        <span style={{ display: "block", fontWeight: 800, fontSize: 13, lineHeight: 1.1 }}>{o.name}</span>
+        <span style={{ fontFamily: "Fredoka", fontWeight: 700, fontSize: 22, color: dbl ? "#C8901F" : C.pink }}>+{o.pts}</span>
+      </span>
+    </button>
+  );
+}
+function DangerBtn({ onClick, bg, title, sub }) {
+  return (
+    <button onClick={onClick} className="press" style={{ background: bg, color: "#fff", border: "none", borderRadius: 18, padding: "12px", cursor: "pointer", boxShadow: `0 4px 0 ${shade(bg)}` }}>
+      <div style={{ fontFamily: "Fredoka", fontWeight: 700, fontSize: 18 }}>{title}</div>
+      <div style={{ fontSize: 12, fontWeight: 700, opacity: 0.9 }}>{sub}</div>
+    </button>
+  );
+}
+function BigButton({ children, onClick, bg, fg, disabled, style }) {
+  return (
+    <button onClick={onClick} disabled={disabled} className={disabled ? "" : "press"} style={{ width: "100%", background: bg, color: fg, border: "none", borderRadius: 20, padding: "16px",
+      fontFamily: "Fredoka", fontWeight: 700, fontSize: 19, cursor: disabled ? "default" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 10, marginTop: 12,
+      boxShadow: disabled ? "none" : `0 5px 0 ${shade(bg)}`, ...style }}>{children}</button>
+  );
+}
+function TileButton({ onClick, icon, label, sub }) {
+  return (
+    <button onClick={onClick} className="press" style={{ background: "#fff", border: `2px solid ${C.line}`, borderRadius: 20, padding: 16, cursor: "pointer", boxShadow: `0 4px 0 ${C.line}`, textAlign: "left" }}>
+      <div style={{ color: C.pink }}>{icon}</div>
+      <div style={{ fontWeight: 800, fontSize: 16, marginTop: 6 }}>{label}</div>
+      <div style={{ color: C.inkSoft, fontWeight: 600, fontSize: 13 }}>{sub}</div>
+    </button>
+  );
+}
+function Segmented({ value, onChange, options }) {
+  return (
+    <div style={{ display: "flex", gap: 6, background: C.cream, padding: 4, borderRadius: 14 }}>
+      {options.map((o) => (
+        <button key={o.v} onClick={() => onChange(o.v)} style={{ flex: 1, padding: "9px 4px", borderRadius: 10, border: "none", cursor: "pointer",
+          fontWeight: 800, fontSize: 12.5, lineHeight: 1.1, background: value === o.v ? C.ink : "transparent", color: value === o.v ? "#fff" : C.inkSoft }}>{o.l}</button>
+      ))}
+    </div>
+  );
+}
+function Stepper({ value, onChange, step, min, chips }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <button onClick={() => onChange(Math.max(min, value - step))} style={stepBtn}>–</button>
+      <div style={{ fontFamily: "Fredoka", fontWeight: 700, fontSize: 22, minWidth: 48, textAlign: "center" }}>{value}</div>
+      <button onClick={() => onChange(value + step)} style={stepBtn}>+</button>
+      <div style={{ display: "flex", gap: 6, marginLeft: "auto" }}>
+        {chips.map((c) => (
+          <button key={c} onClick={() => onChange(c)} style={{ padding: "6px 10px", borderRadius: 10, border: `2px solid ${value === c ? C.ink : C.line}`,
+            background: value === c ? C.ink : "#fff", color: value === c ? "#fff" : C.ink, fontWeight: 800, fontSize: 13, cursor: "pointer" }}>{c}</button>
+        ))}
+      </div>
+    </div>
+  );
+}
+function CheckPill({ on, onClick, label }) {
+  return (
+    <button onClick={onClick} style={{ flex: 1, padding: "10px", borderRadius: 12, border: `2px solid ${on ? C.grass : C.line}`,
+      background: on ? C.grass : "#fff", color: on ? "#fff" : C.inkSoft, fontWeight: 800, fontSize: 13, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+      {on && <Check size={15} />}{label}
+    </button>
+  );
+}
+function CtlRow({ label, children }) { return <div style={{ marginBottom: 14 }}><div style={{ fontWeight: 800, fontSize: 13, marginBottom: 7 }}>{label}</div>{children}</div>; }
+function Card({ children, style }) { return <div style={{ background: "#fff", border: `2px solid ${C.line}`, borderRadius: 20, padding: 14, ...style }}>{children}</div>; }
+function SectionLabel({ children, style }) { return <div style={{ fontWeight: 800, fontSize: 13, textTransform: "uppercase", letterSpacing: 0.8, color: C.inkSoft, marginBottom: 10, ...style }}>{children}</div>; }
+function TopBar({ title, onBack, right }) {
+  return (
+    <div style={{ ...flexBetween, marginBottom: 18 }}>
+      <button onClick={onBack} style={iconBtn}><ArrowLeft size={20} /></button>
+      <h2 style={{ fontFamily: "Fredoka", fontWeight: 700, fontSize: 24 }}>{title}</h2>
+      <div style={{ width: 44 }}>{right}</div>
+    </div>
+  );
+}
+function RuleRow({ n, t, d, c }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "6px 0" }}>
+      <span style={{ fontFamily: "Fredoka", fontWeight: 700, fontSize: 16, color: c || C.pink, minWidth: 48 }}>{n}</span>
+      <span><b>{t}</b> <span style={{ color: C.inkSoft }}>— {d}</span></span>
+    </div>
+  );
+}
+function Sheet({ children, title, onClose }) {
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(46,31,51,.45)", zIndex: 40, display: "flex", alignItems: "flex-end", justifyContent: "center" }}>
+      <div onClick={(e) => e.stopPropagation()} className="slideup" style={{ background: C.cream, width: "100%", maxWidth: 480, borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: 20, maxHeight: "88vh", overflowY: "auto" }}>
+        <div style={{ ...flexBetween, marginBottom: 12 }}>
+          <h2 style={{ fontFamily: "Fredoka", fontWeight: 700, fontSize: 24 }}>{title}</h2>
+          <button onClick={onClose} style={iconBtn}><X size={20} /></button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+function Confetti() {
+  const pieces = useMemo(() => Array.from({ length: 16 }, (_, i) => ({ left: Math.random() * 100, delay: Math.random() * 0.5, dur: 1 + Math.random(),
+    color: [C.pink, C.gold, C.grass, "#8C6BD9", "#4F8FD6"][i % 5], rot: Math.random() * 360 })), []);
+  return (
+    <div style={{ position: "absolute", inset: 0, overflow: "hidden", pointerEvents: "none", zIndex: 1 }}>
+      {pieces.map((p, i) => <span key={i} className="confetti" style={{ position: "absolute", left: `${p.left}%`, top: -16, width: 10, height: 14, background: p.color, borderRadius: 2, transform: `rotate(${p.rot}deg)`, animationDelay: `${p.delay}s`, animationDuration: `${p.dur}s` }} />)}
+    </div>
+  );
+}
+
+/* ---------- shared inline styles ---------- */
+const flexBetween = { display: "flex", alignItems: "center", justifyContent: "space-between" };
+const flexCenter = { display: "flex", alignItems: "center", justifyContent: "center" };
+const iconBtn = { width: 44, height: 44, borderRadius: 14, border: `2px solid ${C.line}`, background: "#fff", color: C.ink, ...flexCenter, cursor: "pointer" };
+const iconBtnSm = { width: 34, height: 34, borderRadius: 11, border: `2px solid ${C.line}`, background: "#fff", color: C.ink, ...flexCenter, cursor: "pointer" };
+const ghostBtn = { width: "100%", background: "none", border: "none", color: C.inkSoft, fontWeight: 700, padding: 14, marginTop: 8, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 };
+const smallBtn = { background: "#fff", border: `2px solid ${C.line}`, borderRadius: 14, padding: "10px", fontWeight: 800, color: C.ink, cursor: "pointer", ...flexCenter, gap: 6 };
+const chip = { display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", borderRadius: 16, border: "2px solid", fontWeight: 800, fontSize: 15, cursor: "pointer", position: "relative" };
+const orderBadge = { position: "absolute", top: -8, right: -8, width: 22, height: 22, borderRadius: 99, background: C.ink, color: "#fff", fontSize: 12, ...flexCenter, fontFamily: "Fredoka" };
+const presetCard = { background: "#fff", border: "2px solid", borderRadius: 18, padding: "12px 10px", cursor: "pointer", textAlign: "left" };
+const textInput = { flex: 1, padding: "12px 14px", borderRadius: 14, border: `2px solid ${C.line}`, fontSize: 16, fontFamily: "Nunito", fontWeight: 600, outline: "none", background: "#fff", color: C.ink };
+const stepBtn = { width: 38, height: 38, borderRadius: 12, border: `2px solid ${C.line}`, background: "#fff", color: C.ink, fontFamily: "Fredoka", fontWeight: 700, fontSize: 22, cursor: "pointer", ...flexCenter };
+const tag = { background: C.gold, color: C.ink, fontWeight: 800, fontSize: 11, padding: "2px 8px", borderRadius: 8 };
+
+function shade(hex) {
+  const h = hex.replace("#", "");
+  const d = (v) => Math.max(0, Math.round(parseInt(v, 16) * 0.78)).toString(16).padStart(2, "0");
+  return `#${d(h.slice(0, 2))}${d(h.slice(2, 4))}${d(h.slice(4, 6))}`;
+}
+
+function StyleTag() {
+  return (
+    <style>{`
+      @import url('https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&family=Nunito:wght@400;600;700;800&display=swap');
+      * { -webkit-tap-highlight-color: transparent; box-sizing: border-box; }
+      button:focus-visible { outline: 3px solid ${C.ink}; outline-offset: 2px; }
+      input:focus, textarea:focus { border-color: ${C.pink} !important; }
+      .press { transition: transform .06s ease, box-shadow .06s ease; }
+      .press:active { transform: translateY(4px); box-shadow: none !important; }
+      .pop { animation: pop .25s ease; }
+      @keyframes pop { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+      .potpulse { animation: potpulse .3s ease; }
+      @keyframes potpulse { 0% { transform: scale(1); } 35% { transform: scale(1.16); } 100% { transform: scale(1); } }
+      .floatup { animation: floatup .75s ease forwards; }
+      @keyframes floatup { 0% { transform: translateX(-50%) translateY(0); opacity: 1; } 100% { transform: translateX(-50%) translateY(-64px); opacity: 0; } }
+      .bouncein { animation: bouncein .5s cubic-bezier(.2,1.3,.4,1); }
+      @keyframes bouncein { 0% { transform: scale(.6); opacity: 0; } 60% { transform: scale(1.08); } 100% { transform: scale(1); opacity: 1; } }
+      .slideup { animation: slideup .28s cubic-bezier(.2,.9,.3,1); }
+      @keyframes slideup { from { transform: translateY(40px); opacity: .6; } to { transform: none; opacity: 1; } }
+      .parade { animation: parade 3s ease-in-out infinite; }
+      @keyframes parade { 0%,100% { transform: translateX(-4px) rotate(-3deg); } 50% { transform: translateX(4px) rotate(3deg); } }
+      .confetti { animation: confetti linear forwards; }
+      @keyframes confetti { to { transform: translateY(260px) rotate(540deg); opacity: 0; } }
+      @media (prefers-reduced-motion: reduce) { *, .press { animation: none !important; transition: none !important; } }
+    `}</style>
+  );
+}
