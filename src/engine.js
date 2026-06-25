@@ -151,6 +151,8 @@ function reduceGame(g, a) {
       }
       return endTurn({ ...g, scores });
     }
+    case "SET_SCORE":
+      return checkEnd({ ...g, scores: { ...g.scores, [a.playerId]: a.score } });
     default: return g;
   }
 }

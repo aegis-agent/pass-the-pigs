@@ -506,12 +506,28 @@ function GameScreen({ game, byId, dispatch, onMenu, onQuit }) {
       <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 4, marginBottom: 14 }}>
         {game.order.map((id, i) => {
           const p = byId(id), on = i === game.turnIndex, out = game.eliminated.includes(id);
+          const editing = editingScore?.id === id;
+          const commitEdit = () => {
+            if (editingScore) { const n = parseInt(editingScore.score); if (!isNaN(n) && n >= 0) dispatch({ type: "SET_SCORE", playerId: editingScore.id, score: n }); }
+            setEditingScore(null);
+          };
           return (
-            <div key={id} style={{ flex: "0 0 auto", padding: "6px 12px", borderRadius: 14, fontWeight: 800,
+            <div key={id} style={{ flex: "0 0 auto", padding: editing ? "2px 6px" : "6px 12px", borderRadius: 14, fontWeight: 800,
               background: on ? p.color : "#fff", color: on ? "#fff" : C.ink, border: `2px solid ${on ? p.color : C.line}`,
-              display: "flex", alignItems: "center", gap: 6, minWidth: 84, justifyContent: "center", opacity: out ? 0.45 : 1 }}>
+              display: "flex", alignItems: "center", gap: 6, minWidth: editing ? 60 : 84, justifyContent: "center", opacity: out ? 0.45 : 1 }}>
               <span>{out ? "💀" : p.avatar}</span>
-              <span style={{ fontFamily: "Fredoka", fontSize: 18, textDecoration: out ? "line-through" : "none" }}>{game.scores[id]}</span>
+              {editing ? (
+                <input type="number" autoFocus inputMode="numeric" pattern="[0-9]*"
+                  value={editingScore.score} onChange={(e) => setEditingScore({ id, score: e.target.value })}
+                  onBlur={commitEdit}
+                  onKeyDown={(e) => { if (e.key === "Enter") commitEdit(); if (e.key === "Escape") setEditingScore(null); }}
+                  style={{ width: 48, padding: "2px 4px", borderRadius: 8, border: "none", fontSize: 16, fontFamily: "Fredoka", fontWeight: 700, textAlign: "center", background: "rgba(255,255,255,0.3)", color: "inherit", outline: "none" }} />
+              ) : (
+                <span onClick={() => !out && setEditingScore({ id, score: String(game.scores[id]) })}
+                  style={{ fontFamily: "Fredoka", fontSize: 18, textDecoration: out ? "line-through" : "none", cursor: out ? "default" : "pointer" }}>
+                  {game.scores[id]}
+                </span>
+              )}
             </div>
           );
         })}
