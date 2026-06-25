@@ -6,6 +6,14 @@ function finalizeByScore(g) {
   const act = activeIds(g);
   const max = Math.max(...act.map((id) => g.scores[id]));
   const top = act.filter((id) => g.scores[id] === max);
+  // Sudden death: if tied and rule enabled, enter playoff instead of ending
+  if (g.ruleset.suddenDeath && top.length > 1) {
+    return {
+      ...g, status: "suddenDeath", pot: 0, rolls: [],
+      suddenDeathPlayers: top, suddenDeathRound: 0,
+      suddenDeathTurn: 0, suddenDeathScores: Object.fromEntries(top.map(id => [id, 0]))
+    };
+  }
   return { ...g, status: "over", pot: 0, rolls: [], winnerId: top[0] ?? null, tie: top.length > 1 };
 }
 
@@ -50,7 +58,13 @@ function endTurn(g) {
   const n = g.order.length;
   let idx = g.turnIndex;
   for (let s = 1; s <= n; s++) { const j = (g.turnIndex + s) % n; if (!g.eliminated.includes(g.order[j])) { idx = j; break; } }
-  return checkEnd({ ...g, turnIndex: idx, pot: 0, rolls: [], pendingHogCall: null, turnsTaken: g.turnsTaken + 1 });
+  const currentRound = Math.floor(g.turnsTaken / n) + 1;
+  const nextRound = Math.floor((g.turnsTaken + 1) / n) + 1;
+  let roundScores = g.roundScores;
+  if (nextRound > currentRound || g.roundScores.length === 0) {
+    roundScores = [...g.roundScores, { round: currentRound, scores: { ...g.scores } }];
+  }
+  return checkEnd({ ...g, turnIndex: idx, pot: 0, rolls: [], pendingHogCall: null, turnsTaken: g.turnsTaken + 1, roundScores });
 }
 
 function reduceGame(g, a) {
@@ -155,6 +169,26 @@ function reduceGame(g, a) {
       return checkEnd({ ...g, scores: { ...g.scores, [a.playerId]: a.score } });
     default: return g;
   }
+  // Sudden death: alternate between tied players, each gets one turn to bank
+  if (g.status === "suddenDeath" && a.type === "BANK") {
+    const sdPlayers = g.suddenDeathPlayers;
+    const curSd = sdPlayers[g.suddenDeathTurn % sdPlayers.length];
+    const total = (g.suddenDeathScores[curSd] || 0) + g.pot;
+    const sdScores = { ...g.suddenDeathScores, [curSd]: total };
+    const nextTurn = g.suddenDeathTurn + 1;
+    const roundComplete = nextTurn % sdPlayers.length === 0;
+    if (roundComplete) {
+      // All tied players have gone — check winner
+      const maxSd = Math.max(...Object.values(sdScores));
+      const topSd = sdPlayers.filter(id => sdScores[id] === maxSd);
+      if (topSd.length === 1) {
+        return { ...g, status: "over", pot: 0, rolls: [], winnerId: topSd[0], tie: false, suddenDeathScores: sdScores };
+      }
+      // Still tied — next round
+      return { ...g, suddenDeathScores: sdScores, suddenDeathTurn: nextTurn, suddenDeathRound: g.suddenDeathRound + 1, pot: 0, rolls: [] };
+    }
+    return { ...g, suddenDeathScores: sdScores, suddenDeathTurn: nextTurn, pot: 0, rolls: [] };
+  }
 }
 
 function newGame(order, ruleset, n = 1) {
@@ -162,7 +196,7 @@ function newGame(order, ruleset, n = 1) {
     scores: Object.fromEntries(order.map((id) => [id, ruleset.startingScore || 0])),
     eliminated: [], turnIndex: 0, pot: 0, rolls: [], turnsTaken: 0,
     targetReachedAt: null, targetReachedBy: null, pendingHogCall: null,
-    reachedTarget: [], status: "playing", winnerId: null, loserId: null, tie: false };
+    reachedTarget: [], roundScores: [], status: "playing", winnerId: null, loserId: null, tie: false };
 }
 
 const uid = () => Math.random().toString(36).slice(2, 9);

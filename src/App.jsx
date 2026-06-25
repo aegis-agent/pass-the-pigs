@@ -85,7 +85,7 @@ export default function App() {
           session.playerIds.forEach((pid) => { if (pid !== next.loserId) gw[pid] = (gw[pid] || 0) + 1; });
         }
       }
-      const games = [...session.games, { n: next.n, scores: next.scores, winnerId: next.tie ? null : next.winnerId, loserId: next.loserId, eliminated: next.eliminated }];
+      const games = [...session.games, { n: next.n, scores: next.scores, roundScores: next.roundScores || [], suddenDeathScores: next.suddenDeathScores, winnerId: next.tie ? null : next.winnerId, loserId: next.loserId, eliminated: next.eliminated }];
       saveActive({ ...updated, gameWins: gw, gamesPlayed: session.gamesPlayed + 1, games });
       if (session.gamesPlayed === 0) setTimeout(() => setGameJustFinished(true), 500);
       setTimeout(() => setView("over"), 650);
@@ -431,6 +431,10 @@ function SetupScreen({ roster, saveRoster, onBack, onStart, onManage }) {
             <Segmented value={ruleset.hogCall ? "on" : "off"} onChange={(v) => { setRuleset((r) => ({ ...r, hogCall: v === "on" })); touch(); }}
               options={[{ v: "off", l: "Off" }, { v: "on", l: "Advanced rule" }]} />
           </CtlRow>
+          <CtlRow label="Sudden death tiebreaker" hint="If the game ends in a tie, tied players enter a playoff: each gets one turn to bank points. Highest bank wins. If still tied, repeat.">
+            <Segmented value={ruleset.suddenDeath ? "on" : "off"} onChange={(v) => { setRuleset((r) => ({ ...r, suddenDeath: v === "on" })); touch(); }}
+              options={[{ v: "off", l: "Off" }, { v: "on", l: "Playoff" }]} />
+          </CtlRow>
         </Card>
       )}
 
@@ -444,7 +448,7 @@ function SetupScreen({ roster, saveRoster, onBack, onStart, onManage }) {
 
 function GameScreen({ game, byId, dispatch, onMenu, onQuit }) {
   const R = game.ruleset, wc = R.winCondition;
-  const curId = game.order[game.turnIndex];
+  const curId = game.status === "suddenDeath" ? game.suddenDeathPlayers[game.suddenDeathTurn % game.suddenDeathPlayers.length] : game.order[game.turnIndex];
   const cur = byId(curId);
   const [floats, setFloats] = useState([]);
   const [bump, setBump] = useState(0);
@@ -495,6 +499,14 @@ function GameScreen({ game, byId, dispatch, onMenu, onQuit }) {
 
   return (
     <div className="pop">
+      {game.status === "suddenDeath" && (
+        <div style={{ textAlign: "center", padding: "8px 14px", background: "#FFE066", borderRadius: 14, marginBottom: 10 }}>
+          <span style={{ fontWeight: 800, fontSize: 15, color: "#8B7300" }}>⚡ Sudden Death · Round {game.suddenDeathRound + 1}</span>
+          <span style={{ display: "block", color: C.inkSoft, fontWeight: 600, fontSize: 12, marginTop: 2 }}>
+            Tied players take one turn each — highest bank wins
+          </span>
+        </div>
+      )}
       <div style={{ ...flexBetween, marginBottom: 12 }}>
         <div style={{ fontFamily: "Fredoka", fontWeight: 600, color: C.inkSoft }}>
           Round {Math.min(roundOf(game), wc.type === "rounds" ? wc.rounds : 99)} · Game {game.n} · <span style={{ color: C.ink }}>{header}</span>
@@ -507,7 +519,8 @@ function GameScreen({ game, byId, dispatch, onMenu, onQuit }) {
 
       <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 4, marginBottom: 14 }}>
         {game.order.map((id, i) => {
-          const p = byId(id), on = i === game.turnIndex, out = game.eliminated.includes(id);
+          const sdIdx = game.status === "suddenDeath" ? game.suddenDeathPlayers.indexOf(id) : -1;
+          const p = byId(id), on = game.status === "suddenDeath" ? (sdIdx >= 0 && sdIdx === game.suddenDeathTurn % game.suddenDeathPlayers.length) : i === game.turnIndex, out = game.eliminated.includes(id);
           const editing = editingScore?.id === id;
           const commitEdit = () => {
             if (editingScore) { const n = parseInt(editingScore.score); if (!isNaN(n) && n >= 0) dispatch({ type: "SET_SCORE", playerId: editingScore.id, score: n }); }
@@ -740,6 +753,15 @@ function OverScreen({ session, byId, onNext, onFinish }) {
 function SummaryScreen({ session, byId, onShare, onRematch, onHome }) {
   const lb = leaderboard(session.gameWins, session.playerIds, byId);
   const champ = lb[0];
+
+  // Build per-round score table from all games
+  const allRounds = [];
+  session.games.forEach((g, gi) => {
+    (g.roundScores || []).forEach((rs) => {
+      allRounds.push({ game: gi + 1, round: rs.round, scores: rs.scores });
+    });
+  });
+
   return (
     <div className="pop">
       <div style={{ textAlign: "center", marginTop: 22, marginBottom: 10 }}>
@@ -756,6 +778,39 @@ function SummaryScreen({ session, byId, onShare, onRematch, onHome }) {
           </div>
         ))}
       </Card>
+      {allRounds.length > 0 && (
+        <Card style={{ marginTop: 14 }}>
+          <div style={{ fontWeight: 800, fontSize: 13, textTransform: "uppercase", letterSpacing: 0.8, color: C.inkSoft, marginBottom: 10 }}>
+            Round scores
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr style={{ borderBottom: `2px solid ${C.line}` }}>
+                  <th style={{ padding: "4px 8px", textAlign: "left", fontWeight: 800, color: C.inkSoft }}>Rd</th>
+                  {session.playerIds.map(id => (
+                    <th key={id} style={{ padding: "4px 8px", textAlign: "center", fontWeight: 800, color: C.inkSoft }}>
+                      {byId(id).avatar}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {allRounds.map((r, i) => (
+                  <tr key={i} style={{ borderBottom: `1px solid ${C.line}` }}>
+                    <td style={{ padding: "6px 8px", fontWeight: 800, color: C.inkSoft }}>G{r.game}R{r.round}</td>
+                    {session.playerIds.map(id => (
+                      <td key={id} style={{ padding: "6px 8px", textAlign: "center", fontFamily: "Fredoka", fontWeight: 700 }}>
+                        {r.scores[id] ?? "—"}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
       <BigButton onClick={onShare} bg={C.ink} fg="#fff" style={{ marginTop: 18 }}><Share2 size={20} /> Share results</BigButton>
       <BigButton onClick={onRematch} bg={C.pink} fg="#fff"><RotateCcw size={20} /> Rematch (same players)</BigButton>
       <button onClick={onHome} style={ghostBtn}><Home size={18} /> Back to menu</button>
@@ -819,7 +874,7 @@ function RosterModal({ roster, saveRoster, onClose }) {
     const nm = name.trim(); if (!nm) return;
     const used = new Set(roster.map((p) => p.color));
     const color = SWATCHES.find((c) => !used.has(c)) || SWATCHES[roster.length % SWATCHES.length];
-    saveRoster([...roster, { id: uid(), name: nm, avatar: AVATARS[roster.length % AVATARS.length], color, gamesPlayed: 0, gamesWon: 0 }]);
+    saveRoster([...roster, { id: uid(), name: nm, avatar: AVATARS[roster.length % AVATARS.length], color, gamesPlayed: 0, gamesWon: 0, totalPoints: 0, highScore: 0 }]);
     setName("");
   };
   const update = (id, patch) => saveRoster(roster.map((p) => p.id === id ? { ...p, ...patch } : p));
@@ -867,7 +922,7 @@ function RosterModal({ roster, saveRoster, onClose }) {
               ) : (
                 <button onClick={() => setEdit(p.id)} style={{ flex: 1, background: "none", border: "none", textAlign: "left", fontWeight: 800, fontSize: 16, cursor: "pointer" }}>{p.avatar} {p.name}</button>
               )}
-              <span style={{ color: C.inkSoft, fontWeight: 700, fontSize: 13 }}>{p.gamesWon || 0}🏆</span>
+              <span style={{ color: C.inkSoft, fontWeight: 700, fontSize: 13, textAlign: "right", lineHeight: 1.3 }}>{p.gamesWon || 0}🏆{(p.gamesPlayed || 0) > 0 && <><br /><span style={{ fontSize: 10, fontWeight: 600 }}>{Math.round((p.gamesWon || 0) / p.gamesPlayed * 100)}%</span></>}</span>
               <button onClick={() => remove(p.id)} style={{ ...iconBtnSm, color: C.brick }}><Trash2 size={16} /></button>
             </div>
             {edit === p.id && (
