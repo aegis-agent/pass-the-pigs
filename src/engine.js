@@ -127,6 +127,30 @@ function reduceGame(g, a) {
       }
       return endTurn({ ...g, scores });
     }
+    case "MANUAL_BANK": {
+      const amount = a.amount ?? 0;
+      const total = g.scores[cur] + amount;
+      const hasTarget = wc.type === "targetScore" || wc.type === "targetOrRounds";
+      if (hasTarget && wc.mustHitExact && total > wc.target) return endTurn({ ...g });
+      const scores = { ...g.scores, [cur]: total };
+      const reached = hasTarget && (wc.mustHitExact ? total === wc.target : total >= wc.target);
+      if (reached) {
+        const wm = wc.winMode || "firstTo";
+        if (wm === "firstTo") {
+          if (wc.type === "targetScore" && wc.finishRound) {
+            const after = g.turnsTaken + 1, N = g.order.length;
+            return endTurn({ ...g, scores, targetReachedAt: g.targetReachedAt ?? Math.ceil(after / N) * N, targetReachedBy: g.targetReachedBy ?? cur });
+          }
+          return { ...g, scores, pot: 0, rolls: [], status: "over", winnerId: cur, tie: false };
+        }
+        const reachedTarget = [...(g.reachedTarget || []), cur];
+        if (reachedTarget.length >= g.order.length) {
+          return finalizeByScore({ ...g, scores, reachedTarget });
+        }
+        return endTurn({ ...g, scores, reachedTarget });
+      }
+      return endTurn({ ...g, scores });
+    }
     default: return g;
   }
 }

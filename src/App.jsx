@@ -158,23 +158,17 @@ const leaderboard = (gameWins, ids, byId) =>
     .sort((a, b) => b.wins - a.wins);
 async function shareSession(session, byId) {
   const lb = leaderboard(session.gameWins, session.playerIds, byId);
-  const lines = lb.map((p, i) => `${i === 0 && p.wins > 0 ? "🏆" : "${i + 1}."} ${p.avatar} ${p.name} — ${p.wins} ${p.wins === 1 ? "win" : "wins"}`);
-  const text = `🐷 Pass The Pigs\\n${session.games.length} game${session.games.length === 1 ? "" : "s"} · ${modeLabel(session.ruleset)}\\n\\n${lines.join("\\n")}`;
-  // Copy first — then offer to share (avoids iOS share sheet swallowing the copy)
-  const copied = await (async () => { try { await navigator.clipboard.writeText(text); return true; } catch { return false; } })();
-  if (copied) {
-    if (confirm("Results copied! Want to share them too?")) {
-      try { if (navigator.share) { await navigator.share({ title: "Pass The Pigs", text }); return; } } catch {}
-    }
-  } else {
-    alert(text);
+  const lines = lb.map((p, i) => `${i === 0 && p.wins > 0 ? "🏆" : `${i + 1}.`} ${p.avatar} ${p.name} — ${p.wins} ${p.wins === 1 ? "win" : "wins"}`);
+  const text = `🐷 Pass The Pigs\n${session.games.length} game${session.games.length === 1 ? "" : "s"} · ${modeLabel(session.ruleset)}\n\n${lines.join("\n")}`;
+  try { await navigator.clipboard.writeText(text); alert("Results copied to clipboard!"); } catch { alert(text); }
+  if (navigator.share && confirm("Share this session via messages?")) {
+    try { await navigator.share({ title: "Pass The Pigs", text }); } catch {}
   }
 }
 
-
-/* ===========================================================
+/* ================================================================== *
  *  SCREENS
- * =========================================================== */
+ * ================================================================== */
 function Shell({ children }) {
   return (
     <div style={{ background: C.cream, minHeight: "100vh", fontFamily: "Nunito, system-ui, sans-serif", color: C.ink }}>
@@ -458,6 +452,8 @@ function GameScreen({ game, byId, dispatch, onMenu, onQuit }) {
   const [hogCallOpen, setHogCallOpen] = useState(false);
   const [hogCaller, setHogCaller] = useState(null);
   const [hogPrediction, setHogPrediction] = useState(null);
+  const [manualScore, setManualScore] = useState("");
+  const [showManual, setShowManual] = useState(false);
 
   const hogEligible = R.hogCall && game.pot >= 20 && !game.pendingHogCall;
   const activeNonCur = game.order.filter(id =>
@@ -555,6 +551,27 @@ function GameScreen({ game, byId, dispatch, onMenu, onQuit }) {
         bg={game.pot === 0 ? C.line : C.grass} fg={game.pot === 0 ? C.inkSoft : "#fff"} style={{ marginTop: 16 }}>
         <Check size={24} /> {game.pot === 0 ? "Bank" : `Bank ${game.pot} point${game.pot === 1 ? "" : "s"}`}
       </BigButton>
+
+      <button onClick={() => setShowManual((v) => !v)} style={{ ...ghostBtn, fontSize: 13, padding: "6px 0", marginTop: 4 }}>
+        ✏️ {showManual ? "Hide manual" : "Manual score"}
+      </button>
+      {showManual && (
+        <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+          <input type="number" value={manualScore} onChange={(e) => setManualScore(e.target.value)}
+            inputMode="numeric" pattern="[0-9]*" placeholder="Score"
+            onKeyDown={(e) => { if (e.key === "Enter") { const n = parseInt(manualScore); if (!isNaN(n) && n >= 0) { dispatch({ type: "MANUAL_BANK", amount: n }); setManualScore(""); setShowManual(false); } } }}
+            style={{ flex: 1, padding: "8px 12px", borderRadius: 12, border: `2px solid ${C.line}`,
+              fontSize: 15, fontFamily: "Nunito", fontWeight: 600, outline: "none", background: "#fff", color: C.ink }} />
+          <button onClick={() => { const n = parseInt(manualScore); if (!isNaN(n) && n >= 0) { dispatch({ type: "MANUAL_BANK", amount: n }); setManualScore(""); setShowManual(false); } }}
+            style={{ padding: "8px 16px", borderRadius: 12, border: "none", background: C.pink, color: "#fff", fontWeight: 800, fontSize: 14, cursor: "pointer", fontFamily: "Nunito", whiteSpace: "nowrap" }}>
+            Bank it
+          </button>
+          <button onClick={() => { dispatch({ type: "MANUAL_BANK", amount: 0 }); setShowManual(false); }}
+            style={{ padding: "8px 14px", borderRadius: 12, border: `2px solid ${C.line}`, background: "#fff", color: C.inkSoft, fontWeight: 700, fontSize: 14, cursor: "pointer", fontFamily: "Nunito", whiteSpace: "nowrap" }}>
+            0 pts
+          </button>
+        </div>
+      )}
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 10 }}>
         {dangers.map((d) => <DangerBtn key={d.type} onClick={() => dispatch({ type: d.type })} bg={d.bg} title={d.title} sub={d.sub} />)}
@@ -779,28 +796,12 @@ function RosterModal({ roster, saveRoster, onClose }) {
   };
   const update = (id, patch) => saveRoster(roster.map((p) => p.id === id ? { ...p, ...patch } : p));
   const remove = (id) => { if (confirm("Remove this player? Their saved name and stats go too.")) saveRoster(roster.filter((p) => p.id !== id)); };
-  const [showSharePanel, setShowSharePanel] = useState(false);
-  const rosterCode = useMemo(() => (roster.length ? encodeRoster(roster) : ""), [roster]);
-
-  const copyRosterCode = async () => {
-    try { await navigator.clipboard.writeText(rosterCode); alert("Player code copied!"); } catch { alert(rosterCode); }
+  const shareList = async () => {
+    if (!roster.length) return;
+    const code = encodeRoster(roster);
+    try { if (navigator.share) { await navigator.share({ title: "Pass The Pigs players", text: `🐷 Our players — import this code in the app:\n\n${code}` }); return; } } catch {}
+    try { await navigator.clipboard.writeText(code); alert("Player code copied!"); } catch { alert(code); }
   };
-
-  const shareRosterCode = async () => {
-    if (!rosterCode) return;
-    const fullText = `🐷 My Pass The Pigs players — import this code in the app:\\n\\n${rosterCode}`;
-    // Copy first — then offer to share
-    const copied = await (async () => { try { await navigator.clipboard.writeText(fullText); return true; } catch { return false; } })();
-    if (copied) {
-      if (confirm("Player code copied! Share it now?")) {
-        try { if (navigator.share) { await navigator.share({ title: "Pass The Pigs players", text: fullText }); return; } } catch {}
-      }
-    } else {
-      try { if (navigator.share) { await navigator.share({ title: "Pass The Pigs players", text: fullText }); return; } } catch {}
-      alert(fullText);
-    }
-  };
-
   const doImport = () => {
     try {
       const incoming = decodeRoster(code);
