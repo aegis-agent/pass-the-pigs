@@ -453,7 +453,7 @@ function GameScreen({ game, byId, dispatch, onMenu, onQuit }) {
   const [hogCaller, setHogCaller] = useState(null);
   const [hogPrediction, setHogPrediction] = useState(null);
   const [manualScore, setManualScore] = useState("");
-  const [showManual, setShowManual] = useState(false);
+  const [showManual] = useState(false); // showManual replaced by always-visible manual section
 
   const hogEligible = R.hogCall && game.pot >= 20 && !game.pendingHogCall;
   const activeNonCur = game.order.filter(id =>
@@ -496,7 +496,9 @@ function GameScreen({ game, byId, dispatch, onMenu, onQuit }) {
   return (
     <div className="pop">
       <div style={{ ...flexBetween, marginBottom: 12 }}>
-        <div style={{ fontFamily: "Fredoka", fontWeight: 600, color: C.inkSoft }}>Game {game.n} · <span style={{ color: C.ink }}>{header}</span></div>
+        <div style={{ fontFamily: "Fredoka", fontWeight: 600, color: C.inkSoft }}>
+          Round {Math.min(roundOf(game), wc.type === "rounds" ? wc.rounds : 99)} · Game {game.n} · <span style={{ color: C.ink }}>{header}</span>
+        </div>
         <div style={{ display: "flex", gap: 6 }}>
           <button onClick={onMenu} style={iconBtnSm}><HelpCircle size={18} /></button>
           <button onClick={() => setConfirmQuit(true)} style={iconBtnSm}><X size={18} /></button>
@@ -524,8 +526,9 @@ function GameScreen({ game, byId, dispatch, onMenu, onQuit }) {
                   style={{ width: 48, padding: "2px 4px", borderRadius: 8, border: "none", fontSize: 16, fontFamily: "Fredoka", fontWeight: 700, textAlign: "center", background: "rgba(255,255,255,0.3)", color: "inherit", outline: "none" }} />
               ) : (
                 <span onClick={() => !out && setEditingScore({ id, score: String(game.scores[id]) })}
-                  style={{ fontFamily: "Fredoka", fontSize: 18, textDecoration: out ? "line-through" : "none", cursor: out ? "default" : "pointer" }}>
+                  style={{ fontFamily: "Fredoka", fontSize: 18, textDecoration: out ? "line-through" : "none", cursor: out ? "default" : "pointer", display: "flex", alignItems: "center", gap: 2 }}>
                   {game.scores[id]}
+                  {!out && <span style={{ fontSize: 10, opacity: 0.4 }}>✎</span>}
                 </span>
               )}
             </div>
@@ -537,6 +540,15 @@ function GameScreen({ game, byId, dispatch, onMenu, onQuit }) {
         <div style={{ fontWeight: 800, fontSize: 20, opacity: 0.95 }}>{cur.avatar} {cur.name}</div>
         <div style={{ fontWeight: 700, fontSize: 13, textTransform: "uppercase", letterSpacing: 1, opacity: 0.8, marginTop: 6 }}>This turn</div>
         <div key={bump} className="potpulse" style={{ fontFamily: "Fredoka", fontWeight: 700, fontSize: 76, lineHeight: 1 }}>{game.pot}</div>
+        {game.rolls.length > 0 && (
+          <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 4, marginTop: 4 }}>
+            {game.rolls.map((r, i) => {
+              const all = [...SINGLES, ...DOUBLES, { key: "kissing", name: "Kissing Bacon" }];
+              const m = all.find(o => o.key === r.key);
+              return <span key={i} style={{ background: "rgba(255,255,255,0.25)", borderRadius: 8, padding: "2px 8px", fontSize: 12, fontWeight: 700 }}>{m ? m.name : r.key} +{r.pts}</span>;
+            })}
+          </div>
+        )}
         <div style={{ fontWeight: 700, opacity: 0.85, fontSize: 14 }}>
           {game.pot === 0 ? "Tap a pig below 🐷" : `Bank → ${projected}${reaches ? " · WINS! 🏆" : ""}`}
         </div>
@@ -568,26 +580,26 @@ function GameScreen({ game, byId, dispatch, onMenu, onQuit }) {
         <Check size={24} /> {game.pot === 0 ? "Bank" : `Bank ${game.pot} point${game.pot === 1 ? "" : "s"}`}
       </BigButton>
 
-      <button onClick={() => setShowManual((v) => !v)} style={{ ...ghostBtn, fontSize: 13, padding: "6px 0", marginTop: 4 }}>
-        ✏️ {showManual ? "Hide manual" : "Manual score"}
-      </button>
-      {showManual && (
-        <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+      <div style={{ marginTop: 10, padding: "10px 12px", borderRadius: 14, background: C.line, border: `1px dashed ${C.inkSoft}20` }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: C.inkSoft, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 6 }}>
+          🐷 Playing with real pigs? Enter the toss result:
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
           <input type="number" value={manualScore} onChange={(e) => setManualScore(e.target.value)}
             inputMode="numeric" pattern="[0-9]*" placeholder="Score"
-            onKeyDown={(e) => { if (e.key === "Enter") { const n = parseInt(manualScore); if (!isNaN(n) && n >= 0) { dispatch({ type: "MANUAL_BANK", amount: n }); setManualScore(""); setShowManual(false); } } }}
-            style={{ flex: 1, padding: "8px 12px", borderRadius: 12, border: `2px solid ${C.line}`,
+            onKeyDown={(e) => { if (e.key === "Enter") { const n = parseInt(manualScore); if (!isNaN(n) && n >= 0) { dispatch({ type: "MANUAL_BANK", amount: n }); setManualScore(""); } } }}
+            style={{ flex: 1, padding: "8px 12px", borderRadius: 10, border: `1px solid ${C.inkSoft}30`,
               fontSize: 15, fontFamily: "Nunito", fontWeight: 600, outline: "none", background: "#fff", color: C.ink }} />
-          <button onClick={() => { const n = parseInt(manualScore); if (!isNaN(n) && n >= 0) { dispatch({ type: "MANUAL_BANK", amount: n }); setManualScore(""); setShowManual(false); } }}
-            style={{ padding: "8px 16px", borderRadius: 12, border: "none", background: C.pink, color: "#fff", fontWeight: 800, fontSize: 14, cursor: "pointer", fontFamily: "Nunito", whiteSpace: "nowrap" }}>
+          <button onClick={() => { const n = parseInt(manualScore); if (!isNaN(n) && n >= 0) { dispatch({ type: "MANUAL_BANK", amount: n }); setManualScore(""); } }}
+            style={{ padding: "8px 16px", borderRadius: 10, border: "none", background: C.pink, color: "#fff", fontWeight: 800, fontSize: 14, cursor: "pointer", fontFamily: "Nunito", whiteSpace: "nowrap" }}>
             Bank it
           </button>
-          <button onClick={() => { dispatch({ type: "MANUAL_BANK", amount: 0 }); setShowManual(false); }}
-            style={{ padding: "8px 14px", borderRadius: 12, border: `2px solid ${C.line}`, background: "#fff", color: C.inkSoft, fontWeight: 700, fontSize: 14, cursor: "pointer", fontFamily: "Nunito", whiteSpace: "nowrap" }}>
-            0 pts
+          <button onClick={() => { dispatch({ type: "MANUAL_BANK", amount: 0 }); }}
+            style={{ padding: "8px 14px", borderRadius: 10, border: `1px solid ${C.inkSoft}30`, background: "#fff", color: C.inkSoft, fontWeight: 700, fontSize: 14, cursor: "pointer", fontFamily: "Nunito", whiteSpace: "nowrap" }}>
+            +0
           </button>
         </div>
-      )}
+      </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 10 }}>
         {dangers.map((d) => <DangerBtn key={d.type} onClick={() => dispatch({ type: d.type })} bg={d.bg} title={d.title} sub={d.sub} />)}
