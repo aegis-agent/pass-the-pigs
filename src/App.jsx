@@ -172,6 +172,11 @@ async function shareSession(session, byId) {
 function Shell({ children }) {
   return (
     <div style={{ background: C.cream, minHeight: "100vh", fontFamily: "Nunito, system-ui, sans-serif", color: C.ink }}>
+      <style>{`
+        @keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(244,183,64,0.4); } 50% { box-shadow: 0 0 0 8px rgba(244,183,64,0); } }
+        @keyframes shake { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-4px); } 75% { transform: translateX(4px); } }
+        @keyframes popIn { 0% { transform: scale(0.5); opacity: 0; } 70% { transform: scale(1.1); } 100% { transform: scale(1); opacity: 1; } }
+      `}</style>
       <div style={{ maxWidth: 480, margin: "0 auto", padding: 16 }}>{children}</div>
     </div>
   );
@@ -456,10 +461,21 @@ function GameScreen({ game, byId, dispatch, onMenu, onQuit }) {
   const [hogCallOpen, setHogCallOpen] = useState(false);
   const [hogCaller, setHogCaller] = useState(null);
   const [hogPrediction, setHogPrediction] = useState(null);
+  const [hogCallResult, setHogCallResult] = useState(null);
   const [manualScore, setManualScore] = useState("");
   const [showManual] = useState(false); // showManual replaced by always-visible manual section
 
   const hogEligible = R.hogCall && game.pot >= 20 && !game.pendingHogCall;
+
+  // Track hog call result for animation
+  useEffect(() => {
+    if (game.pendingHogCall) {
+      setHogCallResult("pending");
+    } else if (hogCallResult === "pending") {
+      setHogCallResult("resolved");
+      setTimeout(() => setHogCallResult(null), 2000);
+    }
+  }, [game.pendingHogCall]);
   const activeNonCur = game.order.filter(id =>
     id !== curId && !game.eliminated.includes(id)
   );
@@ -618,8 +634,12 @@ function GameScreen({ game, byId, dispatch, onMenu, onQuit }) {
         {dangers.map((d) => <DangerBtn key={d.type} onClick={() => dispatch({ type: d.type })} bg={d.bg} title={d.title} sub={d.sub} />)}
       </div>
       {hogEligible && activeNonCur.length > 0 && (
-        <button onClick={() => setHogCallOpen(true)} style={{ ...ghostBtn, color: C.gold }}>
-          <Megaphone size={18} /> Hog Call
+        <button onClick={() => setHogCallOpen(true)} style={{
+          ...ghostBtn, color: C.gold, background: C.gold + "15",
+          border: `2px solid ${C.gold}40`, borderRadius: 14, padding: "10px 16px",
+          animation: "pulse 2s infinite", fontWeight: 800
+        }}>
+          <Megaphone size={18} /> Hog Call — steal double!
         </button>
       )}
       {game.pendingHogCall && (
