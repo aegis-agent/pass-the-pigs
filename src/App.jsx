@@ -812,11 +812,26 @@ function RosterModal({ roster, saveRoster, onClose }) {
   };
   const update = (id, patch) => saveRoster(roster.map((p) => p.id === id ? { ...p, ...patch } : p));
   const remove = (id) => { if (confirm("Remove this player? Their saved name and stats go too.")) saveRoster(roster.filter((p) => p.id !== id)); };
-  const shareList = async () => {
-    if (!roster.length) return;
-    const code = encodeRoster(roster);
-    try { if (navigator.share) { await navigator.share({ title: "Pass The Pigs players", text: `🐷 Our players — import this code in the app:\n\n${code}` }); return; } } catch {}
-    try { await navigator.clipboard.writeText(code); alert("Player code copied!"); } catch { alert(code); }
+  const [showSharePanel, setShowSharePanel] = useState(false);
+  const rosterCode = useMemo(() => (roster.length ? encodeRoster(roster) : ""), [roster]);
+
+  const copyRosterCode = async () => {
+    try { await navigator.clipboard.writeText(rosterCode); alert("Player code copied!"); } catch { alert(rosterCode); }
+  };
+
+  const shareRosterCode = async () => {
+    if (!rosterCode) return;
+    const fullText = `🐷 My Pass The Pigs players — import this code in the app:\n\n${rosterCode}`;
+    // Copy first — then offer to share
+    const copied = await (async () => { try { await navigator.clipboard.writeText(fullText); return true; } catch { return false; } })();
+    if (copied) {
+      if (confirm("Player code copied! Share it now?")) {
+        try { if (navigator.share) { await navigator.share({ title: "Pass The Pigs players", text: fullText }); return; } } catch {}
+      }
+    } else {
+      try { if (navigator.share) { await navigator.share({ title: "Pass The Pigs players", text: fullText }); return; } } catch {}
+      alert(fullText);
+    }
   };
   const doImport = () => {
     try {
