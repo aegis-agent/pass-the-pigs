@@ -270,3 +270,50 @@ describe('Property-based checks', () => {
     }
   });
 });
+
+describe("MANUAL_BANK", () => {
+  it("adds points to current player and advances turn", () => {
+    let g = newGame(["A","B"], rs({ type:"targetScore", target:100 }));
+    g = reduceGame(g, { type:"MANUAL_BANK", amount:5 });
+    expect(g.scores.A).toBe(5);
+    expect(g.turnIndex).toBe(1);
+    expect(g.pot).toBe(0);
+  });
+
+  it("amount 0 advances turn without scoring", () => {
+    let g = newGame(["A","B"], rs({ type:"targetScore", target:100 }));
+    g = reduceGame(g, { type:"MANUAL_BANK", amount:0 });
+    expect(g.scores.A).toBe(0);
+    expect(g.turnIndex).toBe(1);
+  });
+
+  it("accumulates multiple manual banks", () => {
+    let g = newGame(["A","B"], rs({ type:"targetScore", target:100 }));
+    g = reduceGame(g, { type:"MANUAL_BANK", amount:10 });
+    g = reduceGame(g, { type:"MANUAL_BANK", amount:15 });
+    expect(g.scores.B).toBe(15);
+    expect(g.turnIndex).toBe(0);
+  });
+
+  it("wins when target reached", () => {
+    let g = newGame(["A","B"], rs({ type:"targetScore", target:20 }));
+    g = reduceGame(g, { type:"MANUAL_BANK", amount:25 });
+    expect(g.status).toBe("over");
+    expect(g.winnerId).toBe("A");
+  });
+
+  it("respects mustHitExact - overshoot resets", () => {
+    let g = newGame(["A","B"], rs({ type:"targetScore", target:20, mustHitExact:true }));
+    g = reduceGame(g, { type:"MANUAL_BANK", amount:25 });
+    expect(g.status).toBe("playing");
+    expect(g.scores.A).toBe(0);
+    expect(g.turnIndex).toBe(1);
+  });
+
+  it("roundScores tracks manual banks", () => {
+    let g = newGame(["A","B"], rs({ type:"targetScore", target:100 }));
+    g = reduceGame(g, { type:"MANUAL_BANK", amount:5 });
+    expect(g.roundScores).toHaveLength(1);
+    expect(g.roundScores[0].scores.A).toBe(5);
+  });
+});

@@ -451,7 +451,7 @@ function SetupScreen({ roster, saveRoster, onBack, onStart, onManage }) {
   );
 }
 
-function GameScreen({ game, byId, dispatch, onMenu, onQuit }) {
+export function GameScreen({ game, byId, dispatch, onMenu, onQuit }) {
   const R = game.ruleset, wc = R.winCondition;
   const curId = game.status === "suddenDeath" ? game.suddenDeathPlayers[game.suddenDeathTurn % game.suddenDeathPlayers.length] : game.order[game.turnIndex];
   const cur = byId(curId);
@@ -463,6 +463,7 @@ function GameScreen({ game, byId, dispatch, onMenu, onQuit }) {
   const [hogPrediction, setHogPrediction] = useState(null);
   const [hogCallResult, setHogCallResult] = useState(null);
   const [manualScore, setManualScore] = useState("");
+  const manualInputRef = useRef(null);
   const [editingScore, setEditingScore] = useState(null);
   const [showManual] = useState(false); // showManual replaced by always-visible manual section
 
@@ -615,12 +616,12 @@ function GameScreen({ game, byId, dispatch, onMenu, onQuit }) {
           🐷 Playing with real pigs? Enter the toss result:
         </div>
         <div style={{ display: "flex", gap: 8 }}>
-          <input type="number" value={manualScore} onChange={(e) => setManualScore(e.target.value)}
+          <input ref={manualInputRef} type="number" value={manualScore} onChange={(e) => setManualScore(e.target.value)}
             inputMode="numeric" pattern="[0-9]*" placeholder="Score"
-            onKeyDown={(e) => { if (e.key === "Enter") { const n = parseInt(manualScore); if (!isNaN(n) && n >= 0) { dispatch({ type: "MANUAL_BANK", amount: n }); setManualScore(""); } } }}
+            onKeyDown={(e) => { if (e.key === "Enter") { const raw = manualInputRef.current?.value ?? manualScore; const n = parseInt(raw); if (!isNaN(n) && n >= 0) { dispatch({ type: "MANUAL_BANK", amount: n }); setManualScore(""); if (manualInputRef.current) manualInputRef.current.value = ""; } } }}
             style={{ flex: 1, padding: "8px 12px", borderRadius: 10, border: `1px solid ${C.inkSoft}30`,
               fontSize: 15, fontFamily: "Nunito", fontWeight: 600, outline: "none", background: "#fff", color: C.ink }} />
-          <button onClick={() => { const n = parseInt(manualScore); if (!isNaN(n) && n >= 0) { dispatch({ type: "MANUAL_BANK", amount: n }); setManualScore(""); } }}
+          <button onClick={() => { const raw = manualInputRef.current?.value ?? manualScore; const n = parseInt(raw); if (!isNaN(n) && n >= 0) { dispatch({ type: "MANUAL_BANK", amount: n }); setManualScore(""); if (manualInputRef.current) manualInputRef.current.value = ""; } }}
             style={{ padding: "8px 16px", borderRadius: 10, border: "none", background: C.pink, color: "#fff", fontWeight: 800, fontSize: 14, cursor: "pointer", fontFamily: "Nunito", whiteSpace: "nowrap" }}>
             Bank it
           </button>
