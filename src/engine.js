@@ -129,7 +129,7 @@ function reduceGame(g, a) {
             const after = g.turnsTaken + 1, N = g.order.length;
             return endTurn({ ...g, scores, targetReachedAt: g.targetReachedAt ?? Math.ceil(after / N) * N, targetReachedBy: g.targetReachedBy ?? cur });
           }
-          return { ...g, scores, pot: 0, rolls: [], status: "over", winnerId: cur, tie: false };
+          return captureRoundScores({ ...g, scores, pot: 0, rolls: [], status: "over", winnerId: cur, tie: false });
         }
         // lastLoses / firstN: mark as reached, keep playing
         const reachedTarget = [...(g.reachedTarget || []), cur];
@@ -155,7 +155,7 @@ function reduceGame(g, a) {
             const after = g.turnsTaken + 1, N = g.order.length;
             return endTurn({ ...g, scores, targetReachedAt: g.targetReachedAt ?? Math.ceil(after / N) * N, targetReachedBy: g.targetReachedBy ?? cur });
           }
-          return { ...g, scores, pot: 0, rolls: [], status: "over", winnerId: cur, tie: false };
+          return captureRoundScores({ ...g, scores, pot: 0, rolls: [], status: "over", winnerId: cur, tie: false });
         }
         const reachedTarget = [...(g.reachedTarget || []), cur];
         if (reachedTarget.length >= g.order.length) {
@@ -215,4 +215,14 @@ function modeLabel(rs) {
   return `first to ${wc.target}${wc.mustHitExact ? " (exact)" : ""}${wc.finishRound ? " · finish round" : ""}`;
 }
 
-export { activeIds, finalizeByScore, checkEnd, endTurn, reduceGame, newGame, uid, roundOf, modeLabel };
+function captureRoundScores(g) {
+  const n = g.order.length;
+  const currentRound = Math.floor(g.turnsTaken / n) + 1;
+  const nextRound = Math.floor((g.turnsTaken + 1) / n) + 1;
+  if (nextRound > currentRound || g.roundScores.length === 0) {
+    return { ...g, roundScores: [...g.roundScores, { round: currentRound, scores: { ...g.scores } }] };
+  }
+  return g;
+}
+
+export { activeIds, finalizeByScore, checkEnd, endTurn, reduceGame, newGame, uid, roundOf, modeLabel, captureRoundScores };

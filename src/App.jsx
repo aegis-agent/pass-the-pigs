@@ -463,6 +463,7 @@ function GameScreen({ game, byId, dispatch, onMenu, onQuit }) {
   const [hogPrediction, setHogPrediction] = useState(null);
   const [hogCallResult, setHogCallResult] = useState(null);
   const [manualScore, setManualScore] = useState("");
+  const [editingScore, setEditingScore] = useState(null);
   const [showManual] = useState(false); // showManual replaced by always-visible manual section
 
   const hogEligible = R.hogCall && game.pot >= 20 && !game.pendingHogCall;
