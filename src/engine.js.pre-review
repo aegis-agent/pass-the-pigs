@@ -14,7 +14,7 @@ function finalizeByScore(g) {
       suddenDeathTurn: 0, suddenDeathScores: Object.fromEntries(top.map(id => [id, 0]))
     };
   }
-  return { ...g, status: "over", pot: 0, rolls: [], winnerId: top.length === 1 ? top[0] : null, tie: top.length > 1 };
+  return { ...g, status: "over", pot: 0, rolls: [], winnerId: top[0] ?? null, tie: top.length > 1 };
 }
 
 function checkEnd(g) {
@@ -33,9 +33,6 @@ function checkEnd(g) {
       if (notReached.length === 1 && act.length > 1 && reached.length > 0) {
         return { ...g, status: "over", winnerId: null, loserId: notReached[0], tie: false };
       }
-      if (notReached.length === 0 && reached.length > 0) {
-        return finalizeByScore(captureRoundScores(g));
-      }
     }
     if (wm === "firstN") {
       const need = wc.winCount ?? (g.order.length - 1);
@@ -52,7 +49,7 @@ function checkEnd(g) {
 
   if ((wc.type === "rounds" || wc.type === "targetOrRounds") && g.turnsTaken >= wc.rounds * g.order.length)
     return finalizeByScore(g);
-  if ((wc.type === "targetScore" || wc.type === "targetOrRounds") && wc.finishRound && g.targetReachedAt != null && g.turnsTaken >= g.targetReachedAt)
+  if (wc.type === "targetScore" && wc.finishRound && g.targetReachedAt != null && g.turnsTaken >= g.targetReachedAt)
     return finalizeByScore(g);
   return g;
 }
@@ -98,7 +95,7 @@ function reduceGame(g, a) {
     case "UNDO": {
       if (!g.rolls.length) return g;
       const last = g.rolls[g.rolls.length - 1];
-      return { ...g, pot: Math.max(0, g.pot - last.pts), rolls: g.rolls.slice(0, -1) };
+      return { ...g, pot: g.pot - last.pts, rolls: g.rolls.slice(0, -1) };
     }
     case "PIG_OUT": {
       if (R.pigOutPenalty === null) return g; // ignore — turn continues
@@ -120,24 +117,6 @@ function reduceGame(g, a) {
       if (R.piggyback === "eliminate") return endTurn({ ...g, eliminated: [...g.eliminated, cur] });
       return endTurn({ ...g, scores: { ...g.scores, [cur]: 0 } });
     case "BANK": {
-      // Sudden death: tied players alternate, each gets one turn to bank
-      if (g.status === "suddenDeath") {
-        const sdPlayers = g.suddenDeathPlayers;
-        const curSd = sdPlayers[g.suddenDeathTurn % sdPlayers.length];
-        const totalSd = (g.suddenDeathScores?.[curSd] ?? 0) + g.pot;
-        const sdScores = { ...(g.suddenDeathScores || {}), [curSd]: totalSd };
-        const nextSdTurn = g.suddenDeathTurn + 1;
-        const sdRoundComplete = nextSdTurn % sdPlayers.length === 0;
-        if (sdRoundComplete) {
-          const maxScore = Math.max(...Object.values(sdScores));
-          const topSd = sdPlayers.filter((id) => sdScores[id] === maxScore);
-          if (topSd.length === 1) {
-            return captureRoundScores({ ...g, status: "over", pot: 0, rolls: [], winnerId: topSd[0], tie: false, suddenDeathScores: sdScores, suddenDeathTurn: nextSdTurn });
-          }
-          return { ...g, pot: 0, rolls: [], suddenDeathTurn: nextSdTurn, suddenDeathScores: sdScores, suddenDeathRound: (g.suddenDeathRound || 0) + 1 };
-        }
-        return { ...g, pot: 0, rolls: [], suddenDeathTurn: nextSdTurn, suddenDeathScores: sdScores };
-      }
       const total = g.scores[cur] + g.pot;
       const hasTarget = wc.type === "targetScore" || wc.type === "targetOrRounds";
       if (hasTarget && wc.mustHitExact && total > wc.target) return endTurn({ ...g }); // bust
@@ -146,18 +125,16 @@ function reduceGame(g, a) {
       if (reached) {
         const wm = wc.winMode || "firstTo";
         if (wm === "firstTo") {
-          if ((wc.type === "targetScore" || wc.type === "targetOrRounds") && wc.finishRound) {
+          if (wc.type === "targetScore" && wc.finishRound) {
             const after = g.turnsTaken + 1, N = g.order.length;
             return endTurn({ ...g, scores, targetReachedAt: g.targetReachedAt ?? Math.ceil(after / N) * N, targetReachedBy: g.targetReachedBy ?? cur });
           }
           return captureRoundScores({ ...g, scores, pot: 0, rolls: [], status: "over", winnerId: cur, tie: false });
         }
         // lastLoses / firstN: mark as reached, keep playing
-        const reachedTarget = (g.reachedTarget || []).includes(cur)
-          ? g.reachedTarget
-          : [...(g.reachedTarget || []), cur];
+        const reachedTarget = [...(g.reachedTarget || []), cur];
         // If everyone has reached, game should end
-        if (reachedTarget.length >= activeIds(g).length) {
+        if (reachedTarget.length >= g.order.length) {
           return finalizeByScore({ ...g, scores, reachedTarget });
         }
         return endTurn({ ...g, scores, reachedTarget });
@@ -165,8 +142,8 @@ function reduceGame(g, a) {
       return endTurn({ ...g, scores });
     }
     case "MANUAL_BANK": {
-      const amount = Math.max(0, a.amount ?? 0);
-      const total = g.scores[cur] + g.pot + amount;
+      const amount = a.amount ?? 0;
+      const total = g.scores[cur] + amount;
       const hasTarget = wc.type === "targetScore" || wc.type === "targetOrRounds";
       if (hasTarget && wc.mustHitExact && total > wc.target) return endTurn({ ...g });
       const scores = { ...g.scores, [cur]: total };
@@ -174,32 +151,43 @@ function reduceGame(g, a) {
       if (reached) {
         const wm = wc.winMode || "firstTo";
         if (wm === "firstTo") {
-          if ((wc.type === "targetScore" || wc.type === "targetOrRounds") && wc.finishRound) {
+          if (wc.type === "targetScore" && wc.finishRound) {
             const after = g.turnsTaken + 1, N = g.order.length;
             return endTurn({ ...g, scores, targetReachedAt: g.targetReachedAt ?? Math.ceil(after / N) * N, targetReachedBy: g.targetReachedBy ?? cur });
           }
           return captureRoundScores({ ...g, scores, pot: 0, rolls: [], status: "over", winnerId: cur, tie: false });
         }
-        const reachedTarget = (g.reachedTarget || []).includes(cur)
-          ? g.reachedTarget
-          : [...(g.reachedTarget || []), cur];
-        if (reachedTarget.length >= activeIds(g).length) {
+        const reachedTarget = [...(g.reachedTarget || []), cur];
+        if (reachedTarget.length >= g.order.length) {
           return finalizeByScore({ ...g, scores, reachedTarget });
         }
         return endTurn({ ...g, scores, reachedTarget });
       }
       return endTurn({ ...g, scores });
     }
-    case "SET_SCORE": {
-      const newScores = { ...g.scores, [a.playerId]: a.score };
-      const hasTarget = wc.type === "targetScore" || wc.type === "targetOrRounds";
-      let reachedTarget = g.reachedTarget || [];
-      if (hasTarget && newScores[a.playerId] >= wc.target && !reachedTarget.includes(a.playerId)) {
-        reachedTarget = [...reachedTarget, a.playerId];
-      }
-      return checkEnd({ ...g, scores: newScores, reachedTarget });
-    }
+    case "SET_SCORE":
+      return checkEnd({ ...g, scores: { ...g.scores, [a.playerId]: a.score } });
     default: return g;
+  }
+  // Sudden death: alternate between tied players, each gets one turn to bank
+  if (g.status === "suddenDeath" && a.type === "BANK") {
+    const sdPlayers = g.suddenDeathPlayers;
+    const curSd = sdPlayers[g.suddenDeathTurn % sdPlayers.length];
+    const total = (g.suddenDeathScores[curSd] || 0) + g.pot;
+    const sdScores = { ...g.suddenDeathScores, [curSd]: total };
+    const nextTurn = g.suddenDeathTurn + 1;
+    const roundComplete = nextTurn % sdPlayers.length === 0;
+    if (roundComplete) {
+      // All tied players have gone — check winner
+      const maxSd = Math.max(...Object.values(sdScores));
+      const topSd = sdPlayers.filter(id => sdScores[id] === maxSd);
+      if (topSd.length === 1) {
+        return { ...g, status: "over", pot: 0, rolls: [], winnerId: topSd[0], tie: false, suddenDeathScores: sdScores };
+      }
+      // Still tied — next round
+      return { ...g, suddenDeathScores: sdScores, suddenDeathTurn: nextTurn, suddenDeathRound: g.suddenDeathRound + 1, pot: 0, rolls: [] };
+    }
+    return { ...g, suddenDeathScores: sdScores, suddenDeathTurn: nextTurn, pot: 0, rolls: [] };
   }
 }
 
@@ -211,7 +199,8 @@ function newGame(order, ruleset, n = 1) {
     reachedTarget: [], roundScores: [], status: "playing", winnerId: null, loserId: null, tie: false };
 }
 
-const uid = () => Math.random().toString(36).slice(2, 9);const roundOf = (g) => Math.floor(g.turnsTaken / (g.order.length || 1)) + 1;
+const uid = () => Math.random().toString(36).slice(2, 9);
+const roundOf = (g) => Math.floor(g.turnsTaken / g.order.length) + 1;
 
 function modeLabel(rs) {
   const wc = rs.winCondition;

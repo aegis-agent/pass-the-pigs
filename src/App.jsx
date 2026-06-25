@@ -77,16 +77,16 @@ export default function App() {
     const updated = { ...session, currentGame: next };
     saveActive(updated);
     if (next.status === "over") {
-      const gw = { ...session.gameWins };
+      const gw = { ...latest.gameWins };
       if (!next.tie) {
         if (next.winnerId) {
           gw[next.winnerId] = (gw[next.winnerId] || 0) + 1;
         } else if (next.loserId) {
-          session.playerIds.forEach((pid) => { if (pid !== next.loserId) gw[pid] = (gw[pid] || 0) + 1; });
+          latest.playerIds.forEach((pid) => { if (pid !== next.loserId) gw[pid] = (gw[pid] || 0) + 1; });
         }
       }
       const games = [...session.games, { n: next.n, scores: next.scores, roundScores: next.roundScores || [], suddenDeathScores: next.suddenDeathScores, winnerId: next.tie ? null : next.winnerId, loserId: next.loserId, eliminated: next.eliminated }];
-      saveActive({ ...updated, gameWins: gw, gamesPlayed: session.gamesPlayed + 1, games });
+      saveActive({ ...updated, gameWins: gw, gamesPlayed: latest.gamesPlayed + 1, games });
       if (session.gamesPlayed === 0) setTimeout(() => setGameJustFinished(true), 500);
       setTimeout(() => setView("over"), 650);
     }
@@ -1087,7 +1087,7 @@ function Stepper({ value, onChange, step, min, chips }) {
     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
       <button onClick={() => onChange(Math.max(min, value - step))} style={stepBtn}>–</button>
       <div style={{ fontFamily: "Fredoka", fontWeight: 700, fontSize: 22, minWidth: 48, textAlign: "center" }}>{value}</div>
-      <button onClick={() => onChange(value + step)} style={stepBtn}>+</button>
+      <button onClick={() => onChange(max != null ? Math.min(value + step, max) : value + step)} style={stepBtn}>+</button>
       <div style={{ display: "flex", gap: 6, marginLeft: "auto" }}>
         {chips.map((c) => (
           <button key={c} onClick={() => onChange(c)} style={{ padding: "6px 10px", borderRadius: 10, border: `2px solid ${value === c ? C.ink : C.line}`,

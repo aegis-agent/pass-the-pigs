@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { reduceGame, newGame } from '../src/engine.js';
+import { reduceGame, newGame, activeIds, finalizeByScore, roundOf } from '../src/engine.js';
 
 const rs = (winCondition, extra = {}) => ({
   startingScore: 0, pigOutPenalty: 0, oinker: 'wipeTotal', offTable: 'wipeTotal',
@@ -317,3 +317,91 @@ describe("MANUAL_BANK", () => {
     expect(g.roundScores[0].scores.A).toBe(5);
   });
 });
+
+describe('MANUAL_BANK with pot accumulation', () => {
+  const rs = (wc, extra = {}) => ({ startingScore: 0, pigOutPenalty: 0, oinker: 'wipeTotal', offTable: 'wipeTotal', piggyback: 'eliminate', kissingBacon: false, hogCall: false, winCondition: wc, ...extra });
+
+  it('MANUAL_BANK combines amount + existing pot', () => {
+    let g = newGame(['A','B'], rs({ type:'targetScore', target:100 }));
+    g = add(g, 'snouter'); // pot = 10
+    g = reduceGame(g, { type:'MANUAL_BANK', amount:5 }); // should be 10+5=15
+    expect(g.scores.A).toBe(15);
+  });
+
+  it('MANUAL_BANK clamps negative amount to 0', () => {
+    let g = newGame(['A','B'], rs({ type:'targetScore', target:100 }));
+    g = add(g, 'snouter'); // pot = 10
+    g = reduceGame(g, { type:'MANUAL_BANK', amount:-50 }); // clamped to 0, so 10+0=10
+    expect(g.scores.A).toBe(10);
+  });
+});
+
+describe('reachedTarget dedup', () => {
+  it('does not add same player twice', () => {
+    let g = newGame(['A','B'], rs({ type:'targetScore', target:10, winMode:'lastLoses' }));
+    g = add(g, 'dbl_snouter'); g = bank(g); // A reaches 40
+    expect(g.reachedTarget).toEqual(['A']);
+    g = add(g, 'sider'); g = bank(g); // B at 1
+    g = bank(g); // A banks 0 (already above target)
+    expect((g.reachedTarget || []).filter(id => id === 'A')).toHaveLength(1);
+  });
+});
+
+describe('activeIds', () => {
+  it('filters out eliminated players', () => {
+    let g = newGame(['A','B','C'], { startingScore: 0, pigOutPenalty: 0, oinker: 'wipeTotal', offTable: 'off', piggyback: 'eliminate', kissingBacon: false, hogCall: false, winCondition: { type:'targetScore', target:100 } });
+    g = reduceGame(g, { type:'PIGGYBACK' }); // A eliminated
+    expect(activeIds(g)).toEqual(['B','C']);
+  });
+});
+
+describe('lastLoses all-reached fallback', () => {
+  it('resolves when all active players reach target', () => {
+    let g = newGame(['A','B'], { startingScore: 0, pigOutPenalty: 0, oinker: 'wipeTotal', offTable: 'wipeTotal', piggyback: 'eliminate', kissingBacon: false, hogCall: false, winCondition: { type:'targetScore', target:10, winMode:'lastLoses' } });
+    g = add(g, 'dbl_snouter'); g = bank(g); // A reaches 40
+    g = add(g, 'dbl_snouter'); g = bank(g); // B reaches 40
+    expect(g.status).toBe('over');
+  });
+});
+
+describe('SET_SCORE updates reachedTarget', () => {
+  it('adds player to reachedTarget when set to target', () => {
+    let g = newGame(['A','B'], { startingScore: 0, pigOutPenalty: 0, oinker: 'wipeTotal', offTable: 'wipeTotal', piggyback: 'eliminate', kissingBacon: false, hogCall: false, winCondition: { type:'targetScore', target:30, winMode:'firstN', winCount:1 } });
+    g = reduceGame(g, { type:'SET_SCORE', playerId:'A', score:35 });
+    expect(g.reachedTarget).toContain('A');
+  });
+});
+
+describe('UNDO non-negative pot', () => {
+  it('pot never goes below 0', () => {
+    let g = newGame(['A','B'], { startingScore: 0, pigOutPenalty: 0, oinker: 'wipeTotal', offTable: 'wipeTotal', piggyback: 'eliminate', kissingBacon: false, hogCall: false, winCondition: { type:'targetScore', target:100 } });
+    g = add(g, 'sider');
+    g = reduceGame(g, { type:'UNDO' });
+    g = reduceGame(g, { type:'UNDO' }); // empty roll list, pot already 0
+    expect(g.pot).toBe(0);
+  });
+});
+
+describe('roundOf division by zero', () => {
+  it('returns 1 for empty order', () => {
+    let g = { turnsTaken: 5, order: [], eliminated: [], ruleset: {} };
+    expect(roundOf(g)).toBe(6);
+  });
+});
+
+describe('finalizeByScore no contradictory winner+tie', () => {
+  it('null winnerId when tied', () => {
+    let g = { order: ['A','B'], scores: { A:20, B:20 }, eliminated: [], status: 'playing', pot: 0, rolls: [], ruleset: { suddenDeath: false } };
+    const result = finalizeByScore(g);
+    expect(result.winnerId).toBeNull();
+    expect(result.tie).toBe(true);
+  });
+
+  it('sets winnerId when clear winner', () => {
+    let g = { order: ['A','B'], scores: { A:30, B:20 }, eliminated: [], status: 'playing', pot: 0, rolls: [], ruleset: { suddenDeath: false } };
+    const result = finalizeByScore(g);
+    expect(result.winnerId).toBe('A');
+    expect(result.tie).toBe(false);
+  });
+});
+
